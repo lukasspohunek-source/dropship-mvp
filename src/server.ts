@@ -1,9 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import type { Repo } from "./db.js";
-import { ConflictError, NotFoundError, ValidationError, type OrderService } from "./orders.js";
+import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
+import { idParam, optStr } from "./http.js";
+import type { OrderService } from "./orders.js";
 import { parseOrderWebhook, verifyShopifyHmac } from "./shopify.js";
+import type { ShopInput, ShopService } from "./shops.js";
 import type { TrackingService } from "./tracking.js";
+import type { IncomingOrder } from "./types.js";
 
 export interface OAuthProvider {
   authorizeUrl(redirectUri: string): string;
@@ -16,7 +21,12 @@ export interface AppDeps {
   orders: OrderService;
   tracking: TrackingService;
   oauth: OAuthProvider;
-  cfg: { adminToken: string; webhookSecret: string; shop: string; publicBaseUrl: string; dryRun: boolean };
+  shops: ShopService;
+  /** Volá se po uložení nové objednávky (např. CRM). Chyba se jen zaloguje. */
+  onOrderCreated?: (orderId: number, incoming: IncomingOrder) => void;
+  /** Další admin routery (katalog, CRM, compliance…), připojené pod /admin. */
+  extraAdmin?: express.Router[];
+  cfg: { adminToken: string; publicBaseUrl: string; dryRun: boolean; autoPay: boolean };
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -32,6 +42,8 @@ function orderView(repo: Repo, id: number, withDetail = false) {
   if (!o) throw new NotFoundError(`Objednávka ${id} neexistuje`);
   const base = {
     id: o.id,
+    shopId: o.shop_id,
+    customerId: o.customer_id,
     shopifyOrderId: o.shopify_order_id,
     name: o.name,
     status: o.status,
@@ -56,48 +68,75 @@ function orderView(repo: Repo, id: number, withDetail = false) {
   };
 }
 
-const idParam = (req: Request): number => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) throw new ValidationError("Neplatné id");
-  return id;
-};
-
-const optStr = (v: unknown, field: string): string | null => {
-  if (v == null || v === "") return null;
-  if (typeof v !== "string") throw new ValidationError(`${field} musí být text`);
-  return v.trim() || null;
-};
-
 export function createApp(d: AppDeps) {
   const app = express();
   app.disable("x-powered-by");
 
+  // ---------- webové rozhraní ----------
+  const publicDir = fileURLToPath(new URL("../public/", import.meta.url));
+  app.get("/", (_req, res) => res.redirect("/app/"));
+  app.use(
+    "/app",
+    (_req, res, next) => {
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+      );
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Cache-Control", "no-cache");
+      next();
+    },
+    express.static(publicDir, { index: "app.html" }),
+  );
+
   app.get("/health", (_req, res) => {
-    res.json({ ok: true, dryRun: d.cfg.dryRun, aliexpressAuthorized: d.oauth.isAuthorized() });
+    res.json({
+      ok: true,
+      dryRun: d.cfg.dryRun,
+      autoPay: d.cfg.autoPay,
+      aliexpressAuthorized: d.oauth.isAuthorized(),
+      shops: d.shops.list().filter((s) => s.active).length,
+    });
   });
 
   // ---------- Shopify webhook ----------
   app.post("/webhooks/shopify/orders-paid", express.raw({ type: "*/*", limit: "2mb" }), (req, res) => {
     const raw = req.body as Buffer;
-    if (!Buffer.isBuffer(raw) || !verifyShopifyHmac(raw, req.get("x-shopify-hmac-sha256"), d.cfg.webhookSecret)) {
-      res.status(401).send("invalid hmac");
-      return;
-    }
-    const shopHeader = req.get("x-shopify-shop-domain");
-    if (shopHeader && shopHeader !== d.cfg.shop) {
+    const domain = (req.get("x-shopify-shop-domain") ?? "").toLowerCase();
+    const found = domain ? d.shops.findForWebhook(domain) : undefined;
+    if (!found) {
       res.status(403).send("unknown shop");
       return;
     }
-    let incoming;
+    if (!Buffer.isBuffer(raw) || !verifyShopifyHmac(raw, req.get("x-shopify-hmac-sha256"), found.webhookSecret)) {
+      res.status(401).send("invalid hmac");
+      return;
+    }
+    if (!found.shop.active) {
+      // 200, aby Shopify webhook neopakoval; neaktivní e-shop objednávky nezpracovává.
+      d.repo.log(null, "warn", `Webhook z neaktivního e-shopu ${domain} ignorován`);
+      res.status(200).json({ ok: true, ignored: true });
+      return;
+    }
+    let incoming: IncomingOrder;
     try {
       incoming = parseOrderWebhook(JSON.parse(raw.toString("utf8")));
     } catch (e) {
-      d.repo.log(null, "error", `Neplatný webhook: ${(e as Error).message}`);
+      d.repo.log(null, "error", `Neplatný webhook z ${domain}: ${(e as Error).message}`);
       res.status(400).send("bad payload");
       return;
     }
-    const { id, created } = d.orders.ingest(incoming);
-    // Shopify chce odpověď do 5 s → zpracování až po odeslání odpovědi.
+    const { id, created } = d.orders.ingest(incoming, found.shop.id);
+    if (created && d.onOrderCreated) {
+      try {
+        d.onOrderCreated(id, incoming);
+      } catch (e) {
+        d.repo.log(id, "error", `Navazující zpracování (CRM) selhalo: ${(e as Error).message}`);
+      }
+    }
+    // Shopify chce odpověď do 5 s → odeslání do AE až po odpovědi.
     res.status(200).json({ ok: true, id, created });
     if (created) {
       setImmediate(() => {
@@ -138,7 +177,21 @@ export function createApp(d: AppDeps) {
 
   admin.get("/orders", (req, res) => {
     const status = typeof req.query.status === "string" ? req.query.status : undefined;
-    res.json(d.repo.listOrders(status).map((o) => orderView(d.repo, o.id)));
+    const shopId = req.query.shopId ? Number(req.query.shopId) : undefined;
+    res.json(d.repo.listOrders({ status, shopId }).map((o) => orderView(d.repo, o.id)));
+  });
+
+  admin.get("/shops", (_req, res) => {
+    res.json(d.shops.list());
+  });
+  admin.post("/shops", (req, res) => {
+    res.status(201).json(d.shops.create(req.body as ShopInput));
+  });
+  admin.get("/shops/:id", (req, res) => {
+    res.json(d.shops.get(idParam(req)));
+  });
+  admin.patch("/shops/:id", (req, res) => {
+    res.json(d.shops.update(idParam(req), req.body as Partial<ShopInput>));
   });
   admin.get("/orders/:id", (req, res) => {
     res.json(orderView(d.repo, idParam(req), true));
@@ -180,8 +233,11 @@ export function createApp(d: AppDeps) {
     if (!/^\d+$/.test(variantId)) throw new ValidationError("variantId musí být číselné ID varianty Shopify");
     const aeProductId = String(req.body?.aeProductId ?? "").trim();
     if (!/^\d+$/.test(aeProductId)) throw new ValidationError("aeProductId musí být číselné ID produktu AliExpress");
+    const shopId = req.body?.shopId != null ? Number(req.body.shopId) : null;
+    if (shopId != null) d.shops.get(shopId);
     d.repo.upsertMapping({
       shopifyVariantId: variantId,
+      shopId,
       aeProductId,
       aeSkuAttr: optStr(req.body?.aeSkuAttr, "aeSkuAttr"),
       logisticsServiceName: optStr(req.body?.logisticsServiceName, "logisticsServiceName"),
@@ -202,6 +258,7 @@ export function createApp(d: AppDeps) {
     res.json({ url: d.oauth.authorizeUrl(`${d.cfg.publicBaseUrl}/ae/oauth/callback`) });
   });
 
+  for (const r of d.extraAdmin ?? []) admin.use(r);
   app.use("/admin", admin);
 
   app.use((_req, res) => {

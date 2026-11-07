@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { DropshipperClient } from "ae_sdk";
 import type { Repo } from "./db.js";
-import type { PlaceResult, ShippingAddress, Supplier, SupplierLine, SupplierOrderInfo } from "./types.js";
+import type { AeTrendProduct } from "./trends.js";
+import type { AeProduct, AeSku, CatalogSource, PlaceResult, ShippingAddress, Supplier, SupplierLine, SupplierOrderInfo } from "./types.js";
 
 interface StoredToken {
   access_token: string;
@@ -86,7 +87,57 @@ export function unwrapList(v: unknown): any[] {
   return [v];
 }
 
-export class AliExpressSupplier implements Supplier {
+const num = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** Převede výsledek aliexpress.ds.product.get na interní tvar. */
+export function parseAeProduct(r: any, fallbackCurrency: string): AeProduct {
+  const base = r?.ae_item_base_info_dto ?? {};
+  const skus: AeSku[] = unwrapList(r?.ae_item_sku_info_dtos).map((s: any) => {
+    const props = unwrapList(s.ae_sku_property_dtos ?? s.aeop_s_k_u_propertys);
+    const options = props.map((p: any) => ({
+      name: String(p.sku_property_name ?? "Varianta").trim(),
+      value: String(p.property_value_definition_name ?? p.sku_property_value ?? p.property_value_id ?? "").trim(),
+    }));
+    const attr =
+      s.sku_attr ??
+      s.id ??
+      props.map((p: any) => `${p.sku_property_id}:${p.property_value_id_long ?? p.property_value_id}`).join(";");
+    const price = num(s.offer_sale_price) || num(s.sku_price);
+    const stock = num(s.sku_available_stock ?? s.s_k_u_available_stock ?? s.ipm_sku_stock);
+    const image = props.find((p: any) => p.sku_image)?.sku_image ?? null;
+    return {
+      skuAttr: String(attr ?? ""),
+      skuId: s.sku_id != null ? String(s.sku_id) : null,
+      price,
+      stock: s.sku_stock === false ? 0 : stock,
+      options,
+      image: image ? String(image) : null,
+    };
+  });
+  const status = String(base.product_status_type ?? "onSelling");
+  const first = unwrapList(r?.ae_item_sku_info_dtos)[0] as any;
+  return {
+    productId: String(base.product_id ?? ""),
+    title: String(base.subject ?? "").trim(),
+    descriptionHtml: String(base.detail ?? base.mobile_detail ?? ""),
+    currency: String(first?.currency_code ?? base.currency_code ?? fallbackCurrency),
+    available: status === "onSelling" && skus.length > 0,
+    images: String(r?.ae_multimedia_info_dto?.image_urls ?? "")
+      .split(";")
+      .map((u) => u.trim())
+      .filter(Boolean),
+    skus,
+    store: {
+      id: r?.ae_store_info?.store_id != null ? String(r.ae_store_info.store_id) : null,
+      name: r?.ae_store_info?.store_name ?? null,
+    },
+  };
+}
+
+export class AliExpressSupplier implements Supplier, CatalogSource {
   constructor(
     private repo: Repo,
     private cfg: { appKey: string; appSecret: string; payCurrency: string; orderMemo: string; authorizeUrl: string },
@@ -209,6 +260,67 @@ export class AliExpressSupplier implements Supplier {
     if (!ids.length) return { kind: "uncertain", message: "AE vrátil úspěch bez čísel objednávek" };
     // Pozn.: ID nad 2^53 by JSON.parse zaokrouhlil – AE ID jsou zatím pod touto hranicí.
     return { kind: "ok", aeOrderIds: ids };
+  }
+
+  async getProduct(productId: string, shipToCountry: string): Promise<AeProduct> {
+    if (!/^\d+$/.test(productId)) throw new Error("ID produktu AliExpress musí být číslo");
+    const client = await this.client();
+    const res: any = await client.raw("aliexpress.ds.product.get", {
+      product_id: productId,
+      ship_to_country: shipToCountry,
+      target_currency: this.cfg.payCurrency,
+      target_language: "en",
+    });
+    if (!res.ok) {
+      const detail = JSON.stringify(res.error_response ?? {}).slice(0, 200);
+      throw new Error(`AE product.get ${productId}: ${res.message} ${detail}`);
+    }
+    const r = findResult(res.data);
+    if (!r) throw new Error(`AE product.get ${productId}: neočekávaná odpověď`);
+    return parseAeProduct(r, this.cfg.payCurrency);
+  }
+
+  /**
+   * Bestsellery z doporučených DS feedů (aliexpress.ds.recommend.feed.get).
+   * Bez zadaných feedů vezme první dva z aliexpress.ds.feedname.get.
+   */
+  async getTrendingProducts(country: string, feeds: string[] = []): Promise<AeTrendProduct[]> {
+    const client = await this.client();
+    let names = feeds;
+    if (!names.length) {
+      const fr: any = await client.raw("aliexpress.ds.feedname.get", {});
+      if (!fr.ok) throw new Error(`AE feedname.get: ${fr.message}`);
+      const result = findResult(fr.data);
+      names = unwrapList(result?.promos ?? result).map((p: any) => String(p?.promo_name ?? "")).filter(Boolean).slice(0, 2);
+      if (!names.length) throw new Error("AE nevrátil žádné feedy – nastav AE_TREND_FEEDS");
+    }
+    const out: AeTrendProduct[] = [];
+    for (const feed of names) {
+      const res: any = await client.raw("aliexpress.ds.recommend.feed.get", {
+        feed_name: feed,
+        country,
+        target_currency: this.cfg.payCurrency,
+        target_language: "EN",
+        page_size: 50,
+        sort: "volumeDesc",
+      });
+      if (!res.ok) throw new Error(`AE recommend.feed.get (${feed}): ${res.message}`);
+      const result = findResult(res.data);
+      for (const p of unwrapList(result?.products ?? result?.result?.products)) {
+        if (!p?.product_id) continue;
+        const rating = Number.parseFloat(String(p.evaluate_rate ?? "").replace("%", ""));
+        out.push({
+          productId: String(p.product_id),
+          title: String(p.product_title ?? "").slice(0, 200),
+          priceAe: num(p.target_sale_price ?? p.sale_price ?? p.target_app_sale_price),
+          currency: String(p.target_sale_price_currency ?? p.sale_price_currency ?? this.cfg.payCurrency),
+          orders: p.lastest_volume != null ? num(p.lastest_volume) : null,
+          rating: Number.isFinite(rating) ? rating : null,
+          url: p.product_detail_url ?? null,
+        });
+      }
+    }
+    return [...new Map(out.map((p) => [p.productId, p])).values()].sort((a, b) => (b.orders ?? 0) - (a.orders ?? 0));
   }
 
   async getOrder(aeOrderId: string): Promise<SupplierOrderInfo> {

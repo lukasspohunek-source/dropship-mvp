@@ -40,13 +40,24 @@ export interface IncomingOrder {
   name: string; // "#1001"
   currency: string;
   totalPrice: number;
+  totalTax: number;
   email: string | null;
   address: ShippingAddress | null;
   lines: OrderLine[];
+  customer: IncomingCustomer | null;
+}
+
+export interface IncomingCustomer {
+  email: string | null;
+  name: string | null;
+  phone: string | null;
+  acceptsMarketing: boolean;
+  consentAt: string | null;
 }
 
 export interface Mapping {
   shopifyVariantId: string;
+  shopId?: number | null;
   aeProductId: string;
   aeSkuAttr: string | null; // např. "14:200003699;5:361386"
   logisticsServiceName: string | null; // např. "CAINIAO_STANDARD"
@@ -101,4 +112,31 @@ export interface Store {
     trackingUrl: string | null;
     notifyCustomer: boolean;
   }): Promise<FulfillResult>;
+}
+
+export interface AeSku {
+  /** Hodnota pro sku_attr při objednávce. */
+  skuAttr: string;
+  skuId: string | null;
+  /** Cena v měně AE (offer_sale_price, jinak sku_price). */
+  price: number;
+  stock: number;
+  options: { name: string; value: string }[];
+  image: string | null;
+}
+
+export interface AeProduct {
+  productId: string;
+  title: string;
+  descriptionHtml: string;
+  currency: string;
+  /** false = produkt AE stáhl z prodeje. */
+  available: boolean;
+  images: string[];
+  skus: AeSku[];
+  store: { id: string | null; name: string | null };
+}
+
+export interface CatalogSource {
+  getProduct(productId: string, shipToCountry: string): Promise<AeProduct>;
 }

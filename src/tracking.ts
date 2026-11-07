@@ -19,7 +19,7 @@ export class TrackingService {
   constructor(
     private repo: Repo,
     private supplier: Supplier,
-    private store: Store,
+    private storeFor: (shopId: number) => Store,
     private cfg: TrackingConfig,
     private now: () => Date = () => new Date(),
   ) {}
@@ -88,7 +88,7 @@ export class TrackingService {
     }
 
     const url = this.cfg.urlTemplate ? this.cfg.urlTemplate.replace("{number}", encodeURIComponent(first.number)) : null;
-    const r = await this.store.fulfill({
+    const r = await this.storeFor(order.shop_id).fulfill({
       orderGid: order.shopify_order_gid,
       lineItems: lines.map((l) => ({ lineItemGid: l.lineItemGid, quantity: l.quantity })),
       trackingNumber: first.number,

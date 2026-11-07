@@ -1,132 +1,138 @@
 # dropship-mvp
 
-Samostatný server, který automatizuje dropshipping **Shopify → AliExpress → tracking zpět do Shopify**.
+Samostatný server pro dropshipping **Shopify (více e-shopů) → AliExpress**: objednávky, platby s limity, tracking,
+katalog s hlídáním cen a skladu, CRM, podpora legislativních povinností a webové rozhraní pro mobil.
 
 ```
-Shopify (zaplacená objednávka)
-  └─ webhook orders/paid ──► dropship-mvp ──► AliExpress ds.order.create (volitelně try_to_pay)
-                                  │
-                                  └─ každou hodinu: AE order.get → číslo zásilky
-                                       └─► Shopify fulfillmentCreate + e-mail zákazníkovi
+Shopify e-shopy ── webhook orders/paid ──► dropship-mvp ──► AliExpress (ds.order.create, volitelně try_to_pay)
+                                              │
+       Shopify ◄── fulfillment + tracking ────┤  každou hodinu: stav AE objednávek
+       Shopify ◄── ceny a sklad ──────────────┤  každých 6 h: ds.product.get
+                                              └─ CRM, reklamace, GDPR, DPH report, rozhraní /app
 ```
 
-Část 1 (tento kód): objednávky, platby s limity, tracking, ruční zásahy přes admin API.
-Část 2 (zatím chybí): import produktů z AE, hlídání cen a skladu, webové rozhraní pro schvalování.
+**Vyzkoušení bez účtů:** `npm ci && npm run demo` a otevři http://localhost:3100/app/ (token `demo-token-0123456789-abcdef`).
+
+## Co umí
+
+| Oblast | Funkce |
+|---|---|
+| **Objednávky** | příjem z více e-shopů (každý vlastní secret), odeslání do AE, platba s limitem per e-shop + globálním denním limitem, schvalování dražších, ruční zásahy, žádné automatické opakování nejistých odeslání |
+| **Tracking** | čísla zásilek z AE → Shopify fulfillment + e-mail zákazníkovi, rozdělené zásilky, varování na nezaplacené |
+| **Katalog** | import produktu z AE podle odkazu (koncept v Shopify), cenové pravidlo per e-shop, nákupní cena do Shopify, hlídání cen a skladu, stažené produkty → sklad 0 |
+| **CRM** | zákazníci z objednávek (napříč e-shopy), poznámky, úkoly, leady, reklamace a odstoupení se lhůtami, segmenty + CSV, přehled |
+| **Compliance** | GPSR údaje u produktů, údaje prodávajícího, formulář pro odstoupení, GDPR export/anonymizace/retence, DPH report (OSS/IOSS) |
+| **AI trendy** | signály z Google Trends/Shopping (SerpApi), Seznamu, Heureky, TikToku a Instagramu (Bright Data) + bestsellery AliExpressu → Claude vybere kandidáty, kód spočítá marži, import jedním klepnutím |
+| **Rozhraní** | `/app` – mobilní web, přihlášení admin tokenem |
+
+> Compliance funkce jsou **pomůcka**, ne právní ani daňové poradenství. Obchodní podmínky, GPSR a DPH si nech ověřit.
 
 ## Bezpečnost – výchozí stav nic neodešle
 
 | Proměnná | Výchozí | Význam |
 |---|---|---|
-| `DRY_RUN` | `true` | Do AliExpressu se nic neodešle, jen se zapíše, co by se odeslalo. |
-| `AUTO_PAY` | `false` | Objednávky vzniknou **nezaplacené**, platíš je ručně v AliExpressu. |
-| `AUTO_PAY_MAX_ORDER_TOTAL` | `1500` | S `AUTO_PAY=true`: dražší objednávka (v měně e-shopu) čeká na schválení. |
-| `AUTO_PAY_MAX_PER_DAY` | `10` | S `AUTO_PAY=true`: po vyčerpání čekají další objednávky na schválení. |
+| `DRY_RUN` | `true` | Do AliExpressu se nic neodešle (globálně). |
+| `AUTO_PAY` | `false` | Objednávky vzniknou nezaplacené, platíš ručně v AE (globálně). |
+| `AUTO_PAY_MAX_PER_DAY` | `10` | Max. automatických plateb za 24 h **přes všechny e-shopy**. |
+| limit e-shopu | `1500` | Max. cena jedné objednávky v měně e-shopu; nastavuje se u každého e-shopu. |
 
-Při chybě sítě nebo nejasné odpovědi se objednávka **nikdy automaticky neopakuje** (stav `PLACE_UNCERTAIN`),
-aby nevznikla dvakrát. Musíš ji zkontrolovat v AliExpressu a vyřešit ručně (viz níže).
+- Nejistý výsledek odeslání (výpadek sítě) → stav `PLACE_UNCERTAIN`, nikdy se sám neopakuje.
+- Tokeny e-shopů jsou v DB šifrované (AES-256-GCM, klíč `SECRET_KEY`). Při ztrátě klíče je zadej znovu.
+- Rozhraní: přísná CSP, data se vypisují jen jako text, token zůstává v prohlížeči.
 
 ## Požadavky
 
-- Node.js **22.13+** (používá vestavěné `node:sqlite`, žádná databázová služba)
-- Veřejná HTTPS adresa (VPS, Railway, Render, Fly.io…); SQLite soubor musí být na trvalém disku
-- Shopify e-shop + vlastní aplikace (custom app)
-- Účet na [AliExpress Open Platform](https://openservice.aliexpress.com/) se schválenou aplikací s oprávněním Dropshipping API
+- Node.js **22.13+** (vestavěné `node:sqlite`, bez databázové služby)
+- Veřejná HTTPS adresa, SQLite soubor na trvalém disku
+- Účet na [AliExpress Open Platform](https://openservice.aliexpress.com/) se schválenou aplikací (Dropshipping API)
 
 ## Nastavení
 
-### 1. Shopify
-1. Admin → Settings → Apps and sales channels → Develop apps → vytvoř aplikaci.
-2. Admin API scopes: `read_orders`, `read_merchant_managed_fulfillment_orders`, `write_merchant_managed_fulfillment_orders`.
-3. Nainstaluj aplikaci a zkopíruj Admin API access token → `SHOPIFY_ADMIN_TOKEN`; API secret key → `SHOPIFY_WEBHOOK_SECRET`.
-4. Webhook: topic **Order payment** (`orders/paid`), formát JSON, URL `https://<PUBLIC_BASE_URL>/webhooks/shopify/orders-paid`.
-   > Webhook vytvořený ručně v Settings → Notifications se podepisuje jiným klíčem (zobrazí se tam). Ten pak dej do `SHOPIFY_WEBHOOK_SECRET`.
-
-### 2. AliExpress
-1. Zaregistruj se jako vývojář, vytvoř aplikaci a požádej o Dropshipping API. Schválení trvá.
-2. `AE_APP_KEY` a `AE_APP_SECRET` z konzole aplikace; callback URL v aplikaci nastav na
-   `https://<PUBLIC_BASE_URL>/ae/oauth/callback`.
-3. Ve svém AliExpress účtu měj uloženou platební metodu (kvůli `try_to_pay`).
-
-### 3. Spuštění
+### 1. Server
 ```bash
-cp .env.example .env      # vyplň hodnoty
+cp .env.example .env    # vyplň ADMIN_TOKEN, SECRET_KEY (openssl rand -hex 32), AE_*, PUBLIC_BASE_URL
 npm ci
-npm test                  # testy bez sítě
+npm test
 npm run build
-npm start
+npm start               # rozhraní: https://<host>/app/
 ```
 
-### 4. Propojení AliExpress účtu (jednou, pak se token obnovuje sám)
-```bash
-curl -H "Authorization: Bearer $ADMIN_TOKEN" https://<host>/admin/ae/oauth-url
-# otevři vrácenou URL v prohlížeči, přihlas se do AliExpressu, potvrď
-curl https://<host>/health     # "aliexpressAuthorized": true
+### 2. Každý Shopify e-shop
+1. Admin → Settings → Apps → Develop apps → nová aplikace.
+2. Admin API scopes: `read_orders`, `read_merchant_managed_fulfillment_orders`, `write_merchant_managed_fulfillment_orders`,
+   `write_products`, `write_inventory`, `read_locations`.
+3. Webhook **Order payment** (`orders/paid`), JSON, URL `https://<host>/webhooks/shopify/orders-paid` – stejná pro všechny e-shopy.
+4. V rozhraní **Nastavení → E-shopy → Přidat**: doména, měna, země, Admin API token, webhook secret, limit platby, ceník.
+
+### 3. AliExpress
+V rozhraní **Nastavení → AliExpress → Propojit** (OAuth, token se pak obnovuje sám). Callback URL aplikace v AE:
+`https://<host>/ae/oauth/callback`. Pro `try_to_pay` měj v AE účtu uloženou platební metodu.
+
+### 4. Compliance
+- **Nastavení → Prodávající**: firma, IČO, sídlo, adresa pro vrácení (pro každý e-shop).
+- **Produkty → detail → GPSR**: výrobce, odpovědná osoba v EU, upozornění. Přehled vidíš na úvodní stránce.
+- `OSS_FX_TO_EUR` – kurzy pro DPH report; `RETENTION_YEARS` – automatická anonymizace (0 = vypnuto).
+
+## AI trendy
+
+Produkty → AI trendy → zadej témata (např. „lampa, organizér“). Běh trvá 1–3 minuty a stojí kredity API.
+
+| Zdroj | Jak | Proměnná | Poznámka |
+|---|---|---|---|
+| AliExpress bestsellery | DS API `recommend.feed.get` | (AE účet) | oficiální, zdarma |
+| Google Trends + Shopping | SerpApi | `SERPAPI_KEY` | placené, oficiální API |
+| Seznam | našeptávač | `TRENDS_SEZNAM` | neoficiální, formát se může změnit |
+| Heureka | Bright Data Web Unlocker | `BRIGHTDATA_API_KEY`, `BRIGHTDATA_UNLOCKER_ZONE` | scraping – v rozporu s podmínkami |
+| TikTok, Instagram | Bright Data Web Scraper API | `BRIGHTDATA_*_DATASET_ID` | scraping – v rozporu s podmínkami, ID datasetu z katalogu Bright Data |
+| Vyhodnocení | Claude API (`claude-opus-5-5`, strukturovaný výstup) | `ANTHROPIC_API_KEY` | bez klíče jen surové signály |
+
+- Každý zdroj se zapne jen s vyplněným klíčem; výpadek jednoho nezastaví ostatní.
+- AI smí přiřadit jen produkt ze seznamu AE bestsellerů – vymyšlená ID se zahodí. Marži počítá kód podle cenového pravidla e-shopu, ne AI.
+- Signály z internetu jdou do AI jako data; AI má pokyn ignorovat instrukce v nich.
+- Limit `TRENDS_MAX_RUNS_PER_DAY` (výchozí 10) chrání před nečekanými náklady.
+- Neověřeno naostro (bez klíčů): tvar odpovědí SerpApi, Bright Data datasetů, Seznam našeptávače a AE feedů – parsování je tolerantní, ale první běhy zkontroluj v „Surová data“.
+
+## Cenové pravidlo
+
 ```
-
-## Mapování produktů
-
-Každá varianta v Shopify musí mít přiřazený produkt AliExpress. Bez toho objednávka čeká ve stavu `NEEDS_MAPPING`
-a po přidání mapování se automaticky zpracuje.
-
-```bash
-curl -X PUT https://<host>/admin/mappings/<shopify_variant_id> \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"aeProductId":"1005001234567890","aeSkuAttr":"14:200003699;5:361386","logisticsServiceName":"CAINIAO_STANDARD"}'
+prodejní cena = zaokrouhlit_nahoru(náklad_USD × kurz × násobek + přirážka, krok) − offset
+příklad: 5,20 USD × 23 × 2,2 = 263,12 → 270 − 1 = 269 Kč
 ```
-- `shopify_variant_id`: číselné ID varianty (Shopify admin → produkt → varianta, číslo v URL).
-- `aeProductId`: číslo z URL produktu na AliExpressu.
-- `aeSkuAttr`: konkrétní varianta u dodavatele (barva/velikost). Najdeš ji v odpovědi `aliexpress.ds.product.get`. Import přijde v části 2.
-- `logisticsServiceName`: způsob dopravy; prázdné = AE vybere výchozí.
+Cena nikdy neklesne pod náklad. Sklad v Shopify = min(strop, sklad dodavatele − rezerva).
+Každý e-shop má vlastní pravidlo (SK e-shop v EUR má jiný kurz). Kurz aktualizuj ručně.
 
 ## Stavy objednávky
 
-| Stav | Co znamená | Co udělat |
-|---|---|---|
-| `RECEIVED` | přijato, zpracuje se do minuty | nic |
-| `NEEDS_MAPPING` | varianta bez mapování | přidej mapování |
-| `NEEDS_ADDRESS` | chybí telefon, PSČ apod. | `PATCH /admin/orders/:id/address` (změna v Shopify se sem nepropíše) |
-| `NEEDS_APPROVAL` | nad limitem platby | `approve` nebo `cancel` |
-| `DRY_RUN` | zkušební režim | po vypnutí `DRY_RUN` → `retry` |
-| `PLACED` | vytvořeno v AE, čeká na zásilku | nic |
-| `PLACE_FAILED` | AE odmítl (důvod v `lastError`) | oprav příčinu, `retry` |
-| `PLACE_UNCERTAIN` | **nevíme, jestli vznikla** | zkontroluj v AE, pak `mark-placed` nebo `retry` s potvrzením |
-| `FULFILLED` | tracking je v Shopify | hotovo |
-| `IGNORED` / `CANCELLED` | nic k odeslání / zrušeno | – |
+| Stav | Co udělat |
+|---|---|
+| `NEEDS_MAPPING` | importuj produkt nebo přidej mapování – pak se zpracuje sama |
+| `NEEDS_ADDRESS` | oprav adresu v detailu objednávky (změna v Shopify se nepropíše) |
+| `NEEDS_APPROVAL` | schval, nebo zruš |
+| `PLACE_FAILED` | oprav příčinu (v detailu), zkus znovu |
+| `PLACE_UNCERTAIN` | **ověř v AE**: vznikla → „Označit jako odeslané“; nevznikla → „V AE nevznikla → znovu“ |
+| `PLACED` / `FULFILLED` | čeká na zásilku / hotovo |
 
-## Admin API (vše s `Authorization: Bearer $ADMIN_TOKEN`)
+## API
 
-```
-GET  /admin/orders[?status=NEEDS_APPROVAL]
-GET  /admin/orders/:id                     detail + zásilky + historie událostí
-POST /admin/orders/:id/approve
-POST /admin/orders/:id/retry               {"confirmNotPlaced": true} jen pro PLACE_UNCERTAIN
-POST /admin/orders/:id/mark-placed         {"aeOrderIds": ["8100..."]}
-PATCH /admin/orders/:id/address            {"phone": "+420 777 123 456"} – opraví a zkusí znovu
-POST /admin/orders/:id/cancel              jen lokálně, ne v AE
-GET  /admin/mappings
-PUT  /admin/mappings/:variantId
-DELETE /admin/mappings/:variantId
-POST /admin/tracking/sync                  spustí kontrolu zásilek hned
-GET  /admin/ae/oauth-url
-GET  /health                               bez autorizace
-```
+Vše pod `/admin` s hlavičkou `Authorization: Bearer $ADMIN_TOKEN`. Hlavní skupiny:
+`/orders`, `/shops`, `/mappings`, `/products` (+ `/products/import`, `/products/sync`), `/tracking/sync`,
+`/crm/{dashboard,customers,notes,tasks,leads,tickets,segments}`, `/compliance/{overview,gpsr,products/:id/gpsr,shops/:id/seller,shops/:id/withdrawal-form,gdpr/retention,vat}`,
+`/ae/oauth-url`. Veřejné: `GET /health`, `POST /webhooks/shopify/orders-paid`, `GET /ae/oauth/callback`, `/app`.
 
-## Ověř na prvních reálných objednávkách (s DRY_RUN=false a AUTO_PAY=false)
+## Ověř na prvních reálných objednávkách
 
-Tyto body nešlo ověřit bez schváleného AE účtu. Kód je na ně připravený, ale ber je jako otevřené:
+Bez schváleného AE účtu nešlo ověřit. Kód je připravený, ale ber to jako otevřené body:
 
-1. **Provincie u CZ adres.** AE provincii vyžaduje a Shopify ji u CZ často nemá, proto se posílá město. Pokud AE vrátí
-   `B_DROPSHIPPER_DELIVERY_ADDRESS_VALIDATE_FAIL`, je potřeba mapovat na kraj.
-2. **Parametr pro `aliexpress.trade.ds.order.get`.** Posílá se `order_id` i `single_order_query`; po ověření jeden odstraň (`src/aliexpress.ts`).
-3. **`try_to_pay`.** Jaké platební metody AE takto strhne a jak se pozná nezaplacená objednávka.
-   Kód varuje, pokud je AE objednávka déle než `UNPAID_WARN_HOURS` ve stavu `PLACE_ORDER_SUCCESS`.
-4. **OAuth URL** (`AE_AUTHORIZE_URL`) podle konzole tvé aplikace.
+1. **Provincie u CZ adres** – posílá se město; při `B_DROPSHIPPER_DELIVERY_ADDRESS_VALIDATE_FAIL` mapovat na kraj.
+2. **Parametr `aliexpress.trade.ds.order.get`** – posílá se `order_id` i `single_order_query`; po ověření jeden odstraň (`src/aliexpress.ts`).
+3. **`try_to_pay`** – které platební metody AE strhne.
+4. **Formát `sku_attr`** z `ds.product.get` vs. při objednávce – ověř na produktu s variantami.
+5. **OAuth URL** (`AE_AUTHORIZE_URL`) podle konzole aplikace.
 
-Doporučený postup: `DRY_RUN=true` (pár dní, kontroluj události) → `DRY_RUN=false, AUTO_PAY=false` (platíš ručně) → `AUTO_PAY=true` s nízkým limitem.
+Postup: `DRY_RUN=true` → `DRY_RUN=false, AUTO_PAY=false` (platíš ručně) → `AUTO_PAY=true` s nízkými limity.
 
-## Omezení MVP
+## Omezení
 
-- Jeden proces, jeden e-shop. Pro více instancí by zámek musel být v DB serveru (Postgres).
-- Zrušení nebo vrácení objednávky se do AE nepropisuje, řeš ručně.
-- Kontroluje se jen první číslo zásilky z každé AE objednávky.
-- Legislativa (GPSR, 14denní lhůta na vrácení, clo na zásilky do EU) zůstává na tobě jako prodejci.
+- Jeden proces (zámky v paměti + SQLite). Pro více instancí by bylo potřeba Postgres.
+- Zrušení/vrácení se do AE nepropisuje – řeš ručně, evidenci vedeš v Reklamacích.
+- Databáze z verze 0.1 (bez více e-shopů) se odmítne – MVP ještě neběželo v produkci.

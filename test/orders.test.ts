@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConflictError, OrderService, type OrderConfig } from "../src/orders.js";
-import { FakeSupplier, MAPPING, memRepo, order } from "./helpers.js";
+import { FakeSupplier, MAPPING, memRepo, order, seedShop } from "./helpers.js";
 
-const LIVE: OrderConfig = { dryRun: false, autoPay: { enabled: true, maxOrderTotal: 1500, maxPerDay: 2 } };
+const LIVE: OrderConfig = { dryRun: false, autoPay: { enabled: true, maxPerDay: 2 } };
 
 function setup(cfg: OrderConfig = LIVE) {
   const repo = memRepo();
+  const shopId = seedShop(repo);
   const sup = new FakeSupplier();
-  const svc = new OrderService(repo, sup, cfg);
-  return { repo, sup, svc };
+  const base = new OrderService(repo, sup, cfg, () => 1500);
+  // ingest bez shopId v testech = výchozí e-shop
+  const svc = Object.assign(base, { ingest: (o: Parameters<typeof base.ingest>[0], sid = shopId) => OrderService.prototype.ingest.call(base, o, sid) });
+  return { repo, sup, svc, shopId };
 }
 
 test("duplicitní webhook nevytvoří druhou objednávku", () => {
@@ -81,7 +84,7 @@ test("denní limit automatických plateb", async () => {
 });
 
 test("AUTO_PAY vypnuto → odešle se bez platby a bez schvalování", async () => {
-  const { repo, sup, svc } = setup({ dryRun: false, autoPay: { enabled: false, maxOrderTotal: 0, maxPerDay: 0 } });
+  const { repo, sup, svc } = setup({ dryRun: false, autoPay: { enabled: false, maxPerDay: 0 } });
   repo.upsertMapping(MAPPING);
   const { id } = svc.ingest(order({ totalPrice: 99999 }));
   assert.equal(await svc.process(id), "PLACED");
@@ -135,4 +138,19 @@ test("zrušení odeslané objednávky lokálně nejde", async () => {
   const { id } = svc.ingest(order());
   await svc.process(id);
   assert.throws(() => svc.cancel(id), ConflictError);
+});
+
+test("limit automatické platby se bere z e-shopu objednávky", async () => {
+  const repo = memRepo();
+  const cz = seedShop(repo);
+  const sk = seedShop(repo, { domain: "pokovo-sk.myshopify.com", currency: "EUR", country: "SK", max: 60 });
+  const sup = new FakeSupplier();
+  const limits: Record<number, number> = { [cz]: 1500, [sk]: 60 };
+  const svc = new OrderService(repo, sup, LIVE, (id) => limits[id]!);
+  repo.upsertMapping(MAPPING);
+  const a = svc.ingest(order({ shopifyOrderId: "1", totalPrice: 899, currency: "CZK" }), cz);
+  const b = svc.ingest(order({ shopifyOrderId: "2", totalPrice: 89, currency: "EUR" }), sk);
+  assert.equal(await svc.process(a.id), "PLACED");
+  assert.equal(await svc.process(b.id), "NEEDS_APPROVAL");
+  assert.equal(repo.getOrder(b.id)!.shop_id, sk);
 });

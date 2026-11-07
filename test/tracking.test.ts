@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { OrderService } from "../src/orders.js";
 import { TrackingService } from "../src/tracking.js";
-import { FakeStore, FakeSupplier, MAPPING, memRepo, order } from "./helpers.js";
+import { FakeStore, FakeSupplier, MAPPING, memRepo, order, seedShop } from "./helpers.js";
 
 const TCFG = { notifyCustomer: true, unpaidWarnHours: 6, urlTemplate: "https://t.17track.net/en#nums={number}" };
 
@@ -10,15 +10,16 @@ async function placed(aeIds: string[], lines = order().lines) {
   let now = new Date("2026-11-07T10:00:00Z");
   const clock = () => now;
   const repo = memRepo(clock);
+  const shopId = seedShop(repo);
   const sup = new FakeSupplier();
   const store = new FakeStore();
   repo.upsertMapping(MAPPING);
   repo.upsertMapping({ ...MAPPING, shopifyVariantId: "222", aeProductId: "1005009999999999" });
   sup.next = { kind: "ok", aeOrderIds: aeIds };
-  const svc = new OrderService(repo, sup, { dryRun: false, autoPay: { enabled: true, maxOrderTotal: 9999, maxPerDay: 9 } }, clock);
-  const { id } = svc.ingest(order({ lines }));
+  const svc = new OrderService(repo, sup, { dryRun: false, autoPay: { enabled: true, maxPerDay: 9 } }, () => 9999, clock);
+  const { id } = svc.ingest(order({ lines }), shopId);
   await svc.process(id);
-  const tr = new TrackingService(repo, sup, store, TCFG, clock);
+  const tr = new TrackingService(repo, sup, () => store, TCFG, clock);
   return { repo, sup, store, tr, id, advance: (h: number) => (now = new Date(now.getTime() + h * 3600e3)) };
 }
 

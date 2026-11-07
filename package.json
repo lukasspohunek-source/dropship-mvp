@@ -4,17 +4,22 @@
   "private": true,
   "description": "Shopify → AliExpress dropshipping: automatické objednávky a tracking",
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --import tsx --watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning dist/index.js",
-    "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts"
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts",
+    "demo": "node --disable-warning=ExperimentalWarning --import tsx scripts/demo.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "ae_sdk": "0.6.0",
-    "express": "5.1.0"
+    "express": "5.1.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/express": "5.0.3",

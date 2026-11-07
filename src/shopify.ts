@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { FulfillResult, IncomingOrder, OrderLine, ShippingAddress, Store } from "./types.js";
+import type { FulfillResult, IncomingCustomer, IncomingOrder, OrderLine, ShippingAddress, Store } from "./types.js";
 
 /** Ověří podpis Shopify webhooku (HMAC-SHA256 z raw těla, base64). */
 export function verifyShopifyHmac(rawBody: Buffer, headerHmac: string | undefined, secret: string): boolean {
@@ -14,6 +14,21 @@ const str = (v: unknown): string | null => {
   const s = String(v).trim();
   return s === "" ? null : s;
 };
+
+function parseCustomer(body: any, address: ShippingAddress | null): IncomingCustomer | null {
+  const c = body.customer ?? {};
+  const email = (str(c.email) ?? str(body.email) ?? str(body.contact_email))?.toLowerCase() ?? null;
+  if (!email && !c.id) return null;
+  const consent = c.email_marketing_consent;
+  const subscribed = consent ? consent.state === "subscribed" : body.buyer_accepts_marketing === true;
+  return {
+    email,
+    name: [str(c.first_name), str(c.last_name)].filter(Boolean).join(" ") || address?.fullName || null,
+    phone: str(c.phone) ?? address?.phone ?? null,
+    acceptsMarketing: subscribed,
+    consentAt: subscribed ? (str(consent?.consent_updated_at) ?? str(body.created_at)) : null,
+  };
+}
 
 /** Převede REST payload webhooku orders/paid na interní tvar. */
 export function parseOrderWebhook(body: any): IncomingOrder {
@@ -47,9 +62,11 @@ export function parseOrderWebhook(body: any): IncomingOrder {
     name: String(body.name ?? `#${body.order_number ?? body.id}`),
     currency: String(body.currency ?? ""),
     totalPrice: Number(body.total_price ?? 0),
+    totalTax: Number(body.total_tax ?? 0),
     email: str(body.email) ?? str(body.contact_email),
     address,
     lines,
+    customer: parseCustomer(body, address),
   };
 }
 
