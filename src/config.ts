@@ -31,6 +31,10 @@ export interface Config {
     };
     pollSeconds: number;
   };
+  catalog: {
+    /** Jak často hlídat ceny a sklad u dodavatele. */
+    syncHours: number;
+  };
   tracking: {
     intervalMinutes: number;
     notifyCustomer: boolean;
@@ -112,6 +116,9 @@ export function loadConfig(env: Env = process.env): Config {
         maxPerDay: num("AUTO_PAY_MAX_PER_DAY", 10),
       },
       pollSeconds: num("ORDER_POLL_SECONDS", 60),
+    },
+    catalog: {
+      syncHours: num("CATALOG_SYNC_HOURS", 6),
     },
     tracking: {
       intervalMinutes: num("TRACKING_INTERVAL_MINUTES", 60),

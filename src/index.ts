@@ -1,4 +1,5 @@
 import { AliExpressSupplier } from "./aliexpress.js";
+import { CatalogService, catalogRouter } from "./catalog.js";
 import { loadConfig } from "./config.js";
 import { SecretBox } from "./crypto.js";
 import { Repo } from "./db.js";
@@ -30,6 +31,7 @@ for (const id of repo.idsByStatus("PLACING")) {
 const supplier = new AliExpressSupplier(repo, cfg.ae);
 const orders = new OrderService(repo, supplier, cfg.orders, (shopId) => shops.get(shopId).autoPayMaxOrderTotal);
 const tracking = new TrackingService(repo, supplier, (shopId) => shops.store(shopId), cfg.tracking);
+const catalog = new CatalogService(repo, supplier, shops);
 
 const app = createApp({
   repo,
@@ -37,6 +39,7 @@ const app = createApp({
   tracking,
   oauth: supplier,
   shops,
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping())],
   cfg: { adminToken: cfg.adminToken, publicBaseUrl: cfg.publicBaseUrl, dryRun: cfg.orders.dryRun, autoPay: cfg.orders.autoPay.enabled },
 });
 
@@ -55,6 +58,12 @@ every(cfg.tracking.intervalMinutes * 60_000, "tracking", async () => {
   const r = await tracking.syncAll();
   if (r.checked) console.log(`tracking: ${JSON.stringify(r)}`);
 });
+
+if (cfg.catalog.syncHours > 0)
+  every(cfg.catalog.syncHours * 3600_000, "catalog", async () => {
+    const r = await catalog.syncAll();
+    if (r.products) console.log(`katalog: ${JSON.stringify(r)}`);
+  });
 
 function shutdown(sig: string) {
   console.log(`${sig} – ukončuji`);

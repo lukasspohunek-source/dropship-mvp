@@ -113,3 +113,30 @@ export interface Store {
     notifyCustomer: boolean;
   }): Promise<FulfillResult>;
 }
+
+export interface AeSku {
+  /** Hodnota pro sku_attr při objednávce. */
+  skuAttr: string;
+  skuId: string | null;
+  /** Cena v měně AE (offer_sale_price, jinak sku_price). */
+  price: number;
+  stock: number;
+  options: { name: string; value: string }[];
+  image: string | null;
+}
+
+export interface AeProduct {
+  productId: string;
+  title: string;
+  descriptionHtml: string;
+  currency: string;
+  /** false = produkt AE stáhl z prodeje. */
+  available: boolean;
+  images: string[];
+  skus: AeSku[];
+  store: { id: string | null; name: string | null };
+}
+
+export interface CatalogSource {
+  getProduct(productId: string, shipToCountry: string): Promise<AeProduct>;
+}
