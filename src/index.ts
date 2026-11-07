@@ -1,5 +1,6 @@
 import { AliExpressSupplier } from "./aliexpress.js";
 import { CatalogService, catalogRouter } from "./catalog.js";
+import { ComplianceService, complianceRouter } from "./compliance.js";
 import { loadConfig } from "./config.js";
 import { CrmService, crmRouter } from "./crm.js";
 import { SecretBox } from "./crypto.js";
@@ -34,6 +35,7 @@ const orders = new OrderService(repo, supplier, cfg.orders, (shopId) => shops.ge
 const tracking = new TrackingService(repo, supplier, (shopId) => shops.store(shopId), cfg.tracking);
 const catalog = new CatalogService(repo, supplier, shops);
 const crm = new CrmService(repo);
+const compliance = new ComplianceService(repo, shops, crm, cfg.compliance);
 
 const app = createApp({
   repo,
@@ -42,7 +44,7 @@ const app = createApp({
   oauth: supplier,
   shops,
   onOrderCreated: (id, incoming) => void crm.recordOrder(id, incoming),
-  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm)],
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance)],
   cfg: { adminToken: cfg.adminToken, publicBaseUrl: cfg.publicBaseUrl, dryRun: cfg.orders.dryRun, autoPay: cfg.orders.autoPay.enabled },
 });
 
@@ -67,6 +69,9 @@ if (cfg.catalog.syncHours > 0)
     const r = await catalog.syncAll();
     if (r.products) console.log(`katalog: ${JSON.stringify(r)}`);
   });
+
+if (cfg.compliance.retentionYears > 0)
+  every(24 * 3600_000, "gdpr-retence", async () => compliance.applyRetention());
 
 function shutdown(sig: string) {
   console.log(`${sig} – ukončuji`);

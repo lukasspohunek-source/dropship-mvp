@@ -35,6 +35,7 @@ export interface Config {
     /** Jak často hlídat ceny a sklad u dodavatele. */
     syncHours: number;
   };
+  compliance: { sellerCountry: string; fxToEur: Record<string, number>; retentionYears: number };
   tracking: {
     intervalMinutes: number;
     notifyCustomer: boolean;
@@ -120,6 +121,11 @@ export function loadConfig(env: Env = process.env): Config {
     catalog: {
       syncHours: num("CATALOG_SYNC_HOURS", 6),
     },
+    compliance: {
+      sellerCountry: opt("SELLER_COUNTRY", "CZ").toUpperCase(),
+      fxToEur: parseFx(opt("OSS_FX_TO_EUR", '{"EUR":1,"CZK":0.04}')),
+      retentionYears: num("RETENTION_YEARS", 0),
+    },
     tracking: {
       intervalMinutes: num("TRACKING_INTERVAL_MINUTES", 60),
       notifyCustomer: bool("TRACKING_NOTIFY_CUSTOMER", true),
@@ -133,4 +139,16 @@ export function loadConfig(env: Env = process.env): Config {
   if (cfg.secretKey.length < 32) throw new Error("SECRET_KEY musí mít aspoň 32 znaků");
   validatePricing(cfg.pricingDefaults);
   return cfg;
+}
+
+function parseFx(raw: string): Record<string, number> {
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    throw new Error('OSS_FX_TO_EUR musí být JSON, např. {"EUR":1,"CZK":0.04}');
+  }
+  if (!v || typeof v !== "object" || Object.values(v).some((x) => typeof x !== "number" || !(x > 0)))
+    throw new Error("OSS_FX_TO_EUR: každý kurz musí být kladné číslo");
+  return Object.fromEntries(Object.entries(v as Record<string, number>).map(([k, x]) => [k.toUpperCase(), x]));
 }
