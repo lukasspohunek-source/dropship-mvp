@@ -1,0 +1,34 @@
+
+> dropship-mvp@0.1.0 demo
+> node --disable-warning=ExperimentalWarning --import tsx scripts/demo.ts
+
+[info] Přidán e-shop pokovo-demo.myshopify.com (#1)
+[info] Přidán e-shop pokovo-sk-demo.myshopify.com (#2)
+[info] Import AE 1005006543210987 → Pokovo CZ: 2 variant (koncept v Shopify)
+[info] order#1 Přijata objednávka #1001 (549 CZK)
+[info] order#2 Přijata objednávka #1002 (549 CZK)
+[info] order#3 Přijata objednávka #1003 (2490 CZK)
+[info] order#1 Odesílám do AliExpressu (try_to_pay=true)
+[info] order#1 Vytvořeno v AE: 8100000000000001
+[info] order#2 Odesílám do AliExpressu (try_to_pay=true)
+[info] order#2 Vytvořeno v AE: 8100000000000002
+[warn] order#3 Cena 2490 CZK je nad limitem 1500 – čeká na schválení
+[info] order#4 Přijata objednávka #1004 (549 CZK)
+[warn] order#4 Bez mapování na AliExpress: Háček na zeď (nenamapováno) (variant 55555)
+[info] order#5 Přijata objednávka #1005 (549 CZK)
+[warn] order#5 Chybí v adrese: telefon
+[info] order#6 Přijata objednávka #1006 (89 EUR)
+[warn] order#6 Cena 89 EUR je nad limitem 60 – čeká na schválení
+[info] order#1 Vyřízeno v Shopify, tracking LP1794084908959CZ (CAINIAO_STANDARD)
+[info] order#1 Všechny zásilky vyřízeny
+[info] order#2 Vyřízeno v Shopify, tracking LP1794084908959CZ (CAINIAO_STANDARD)
+[info] order#2 Všechny zásilky vyřízeny
+[info] order#1 Reklamace #1, lhůta do 2026-11-05
+[info] order#2 Odstoupení #2, lhůta do 2026-11-21
+DEMO: http://localhost:3100/app/  token: demo-token-0123456789-abcdef
+[info] order#6 Ručně schváleno k zaplacení
+[info] order#6 Odesílám do AliExpressu (try_to_pay=true)
+[info] order#6 Vytvořeno v AE: 8100000000000003
+[info] order#3 Ručně schváleno k zaplacení
+[info] order#3 Odesílám do AliExpressu (try_to_pay=true)
+[info] order#3 Vytvořeno v AE: 8100000000000004

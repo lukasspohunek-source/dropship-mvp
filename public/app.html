@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Dropship správa</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="top">
+    <strong>Dropship</strong>
+    <span id="mode" class="badge"></span>
+    <button id="logout" class="link" hidden>Odhlásit</button>
+  </header>
+
+  <section id="login" class="card narrow" hidden>
+    <h1>Přihlášení</h1>
+    <p class="muted">Zadej ADMIN_TOKEN ze serveru. Uloží se jen v tomto prohlížeči.</p>
+    <form id="loginForm">
+      <label>Admin token <input id="token" type="password" autocomplete="current-password" required minlength="24"></label>
+      <button type="submit">Přihlásit</button>
+    </form>
+  </section>
+
+  <main id="view" hidden></main>
+
+  <nav id="tabs" class="tabs" hidden>
+    <button data-tab="dashboard">Přehled</button>
+    <button data-tab="orders">Objednávky</button>
+    <button data-tab="products">Produkty</button>
+    <button data-tab="crm">CRM</button>
+    <button data-tab="settings">Nastavení</button>
+  </nav>
+
+  <dialog id="modal"><div id="modalBody"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
