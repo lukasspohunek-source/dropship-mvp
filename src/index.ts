@@ -9,6 +9,18 @@ import { OrderService } from "./orders.js";
 import { createApp } from "./server.js";
 import { ShopService } from "./shops.js";
 import { TrackingService } from "./tracking.js";
+import {
+  ClaudeTrendAnalyzer,
+  GoogleShoppingSource,
+  GoogleTrendsSource,
+  HeurekaSource,
+  InstagramSource,
+  SeznamSuggestSource,
+  TikTokSource,
+  TrendService,
+  trendsRouter,
+  type TrendSource,
+} from "./trends.js";
 
 const cfg = loadConfig();
 const repo = new Repo(cfg.dbPath);
@@ -37,6 +49,26 @@ const catalog = new CatalogService(repo, supplier, shops);
 const crm = new CrmService(repo);
 const compliance = new ComplianceService(repo, shops, crm, cfg.compliance);
 
+// Zdroje trendů se zapnou jen s vyplněnými klíči.
+const t = cfg.trends;
+const trendSources: TrendSource[] = [];
+if (t.serpApiKey) trendSources.push(new GoogleTrendsSource(t.serpApiKey), new GoogleShoppingSource(t.serpApiKey));
+if (t.seznam) trendSources.push(new SeznamSuggestSource());
+if (t.brightData?.tiktokDatasetId) trendSources.push(new TikTokSource(t.brightData, t.brightData.tiktokDatasetId));
+if (t.brightData?.instagramDatasetId) trendSources.push(new InstagramSource(t.brightData, t.brightData.instagramDatasetId));
+if (t.brightData?.unlockerZone) trendSources.push(new HeurekaSource(t.brightData));
+const trends = new TrendService(
+  repo,
+  shops,
+  trendSources,
+  (country) => supplier.getTrendingProducts(country, t.aeFeeds),
+  t.aiEnabled ? new ClaudeTrendAnalyzer(undefined, t.model) : null,
+  { maxRunsPerDay: t.maxRunsPerDay },
+  catalog,
+);
+// Běh, který spadl s procesem, by visel jako RUNNING a blokoval další.
+repo.db.prepare("UPDATE trend_runs SET status = 'FAILED', error = 'Přerušeno restartem' WHERE status = 'RUNNING'").run();
+
 const app = createApp({
   repo,
   orders,
@@ -44,7 +76,7 @@ const app = createApp({
   oauth: supplier,
   shops,
   onOrderCreated: (id, incoming) => void crm.recordOrder(id, incoming),
-  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance)],
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance), trendsRouter(trends, () => orders.reprocessWaitingForMapping())],
   cfg: { adminToken: cfg.adminToken, publicBaseUrl: cfg.publicBaseUrl, dryRun: cfg.orders.dryRun, autoPay: cfg.orders.autoPay.enabled },
 });
 

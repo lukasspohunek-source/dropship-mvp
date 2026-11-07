@@ -36,6 +36,16 @@ export interface Config {
     syncHours: number;
   };
   compliance: { sellerCountry: string; fxToEur: Record<string, number>; retentionYears: number };
+  trends: {
+    /** Claude API: klíč čte SDK z ANTHROPIC_API_KEY. */
+    aiEnabled: boolean;
+    model: string;
+    serpApiKey: string | null;
+    brightData: { apiKey: string; tiktokDatasetId: string | null; instagramDatasetId: string | null; unlockerZone: string | null } | null;
+    seznam: boolean;
+    aeFeeds: string[];
+    maxRunsPerDay: number;
+  };
   tracking: {
     intervalMinutes: number;
     notifyCustomer: boolean;
@@ -120,6 +130,22 @@ export function loadConfig(env: Env = process.env): Config {
     },
     catalog: {
       syncHours: num("CATALOG_SYNC_HOURS", 6),
+    },
+    trends: {
+      aiEnabled: Boolean(env.ANTHROPIC_API_KEY?.trim() || env.ANTHROPIC_AUTH_TOKEN?.trim()),
+      model: opt("TRENDS_MODEL", "claude-opus-5-5"),
+      serpApiKey: env.SERPAPI_KEY?.trim() || null,
+      brightData: env.BRIGHTDATA_API_KEY?.trim()
+        ? {
+            apiKey: env.BRIGHTDATA_API_KEY.trim(),
+            tiktokDatasetId: env.BRIGHTDATA_TIKTOK_DATASET_ID?.trim() || null,
+            instagramDatasetId: env.BRIGHTDATA_INSTAGRAM_DATASET_ID?.trim() || null,
+            unlockerZone: env.BRIGHTDATA_UNLOCKER_ZONE?.trim() || null,
+          }
+        : null,
+      seznam: bool("TRENDS_SEZNAM", true),
+      aeFeeds: opt("AE_TREND_FEEDS", "").split(",").map((s) => s.trim()).filter(Boolean),
+      maxRunsPerDay: num("TRENDS_MAX_RUNS_PER_DAY", 10),
     },
     compliance: {
       sellerCountry: opt("SELLER_COUNTRY", "CZ").toUpperCase(),

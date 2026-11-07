@@ -264,6 +264,9 @@ function editMapping(m, after) {
 // ---------- produkty ----------
 
 async function viewProducts(root) {
+  const sub = state.sub.products || "catalog";
+  put(root, h("div", { class: "subtabs" }, [["catalog", "Katalog"], ["trends", "AI trendy"]].map(([k, l]) => h("button", { class: k === sub ? "on" : "", onclick: () => go("products", k) }, l))));
+  if (sub === "trends") return viewTrends(root);
   const [list, gaps] = await Promise.all([api("/products"), api("/compliance/gpsr")]);
   const gapIds = new Set(gaps.map((g) => g.id));
   put(root, 
@@ -321,6 +324,58 @@ function pricingPreview() {
     if (r) out.replaceChildren(h("b", {}, money(r.price, r.currency)), ` (kurz ${r.rules.fxRate}, násobek ${r.rules.multiplier}, přirážka ${r.rules.fixedAdd})`);
   }), out);
 }
+
+// ---------- AI trendy ----------
+
+const RUN_STATUS = { RUNNING: ["Běží…", "warn"], DONE: ["Hotovo", "ok"], FAILED: ["Chyba", "err"] };
+
+async function viewTrends(root) {
+  const [st, runs] = await Promise.all([api("/trends/status"), api("/trends/runs")]);
+  put(root,
+    h("h1", {}, "AI trendy"),
+    !st.ai ? h("div", { class: "alert" }, "AI vyhodnocení je vypnuté (chybí ANTHROPIC_API_KEY) – uvidíš jen surové signály.") : null,
+    h("div", { class: "card small" },
+      h("div", {}, "Zdroje: ", st.sources.length ? st.sources.map((x) => h("span", { class: "badge" }, x.label)) : "žádné – vyplň klíče v .env", st.aliexpress ? h("span", { class: "badge" }, "AliExpress bestsellery") : null),
+      st.sources.filter((x) => x.caveat).map((x) => h("div", { class: "muted" }, `${x.label}: ${x.caveat}`)),
+      h("div", { class: "muted" }, `Limit ${st.maxRunsPerDay} běhů denně – každý běh stojí kredity API.`)),
+    state.shops.length ? form([
+      { name: "shopId", label: "Pro e-shop (země a měna)", type: "select", options: shopOptions() },
+      { name: "seeds", label: "Témata (čárkou, max. 5)", required: true, placeholder: "lampa, organizér, pes, kuchyně" },
+    ], "Spustit hledání", (v) => act(() => api("/trends/runs", { method: "POST", body: { shopId: Number(v.shopId), seeds: v.seeds } }), "Spuštěno – trvá 1–3 minuty", (r) => openRun(r.id))) : h("p", { class: "muted" }, "Nejdřív přidej e-shop."),
+    h("h2", {}, "Předchozí běhy"),
+    h("div", { class: "list" }, runs.map((r) => h("button", { class: "item", onclick: () => openRun(r.id) },
+      h("div", { class: "row between" }, h("span", { class: "title" }, r.seeds.join(", ")), h("span", { class: `badge ${RUN_STATUS[r.status][1]}` }, RUN_STATUS[r.status][0])),
+      h("div", { class: "small muted" }, `${shopName(r.shopId)} · ${fmtDate(r.createdAt)}`)))),
+  );
+}
+
+let runPoll;
+async function openRun(id) {
+  clearTimeout(runPoll);
+  const r = await api(`/trends/runs/${id}`);
+  const res = r.result;
+  modal(
+    h("h2", {}, r.seeds.join(", "), " ", h("span", { class: `badge ${RUN_STATUS[r.status][1]}` }, RUN_STATUS[r.status][0])),
+    r.status === "RUNNING" ? h("p", { class: "muted" }, "Sbírám signály a vyhodnocuji… stránka se obnoví sama.") : null,
+    r.error ? h("div", { class: "alert err" }, r.error) : null,
+    Object.entries(r.sourceErrors || {}).map(([k, v]) => h("div", { class: "alert" }, `${k}: ${v}`)),
+    res ? h("p", {}, res.summary) : null,
+    res?.candidates?.map((c, i) => h("div", { class: "card" },
+      h("div", { class: "row between" }, h("span", { class: "title" }, c.name), h("span", { class: `badge ${c.score >= 70 ? "ok" : c.score >= 40 ? "warn" : ""}` }, `skóre ${c.score}`)),
+      h("p", { class: "small" }, c.why),
+      c.ourPrice != null ? h("div", { class: "small" }, `Náklad ${money(c.costInShopCurrency, shopCurrency(r.shopId))} → naše cena ${money(c.ourPrice, shopCurrency(r.shopId))} · marže ${Number(c.marginPct).toLocaleString("cs-CZ")} %`) : null,
+      c.expectedSellPrice != null ? h("div", { class: "small muted" }, `Konkurence kolem ${money(c.expectedSellPrice, shopCurrency(r.shopId))}`) : null,
+      c.evidence.length ? h("ul", { class: "small muted" }, c.evidence.map((e) => h("li", {}, e))) : null,
+      c.risks.length ? h("div", { class: "small lvl-warn" }, "Rizika: ", c.risks.join("; ")) : null,
+      h("div", { class: "row" },
+        c.aeProductId ? h("button", { class: "primary", onclick: () => act(() => api(`/trends/runs/${id}/candidates/${i}/import`, { method: "POST" }), "Naimportováno jako koncept") }, "Importovat do Shopify") : null,
+        h("a", { href: c.aeSearchUrl, target: "_blank", rel: "noopener noreferrer" }, "Hledat na AliExpressu")))),
+    r.data ? h("details", {}, h("summary", {}, `Surová data: ${r.data.signals.length} signálů, ${r.data.aeProducts.length} produktů AE`),
+      h("div", { class: "scroll" }, h("table", {}, r.data.signals.slice(0, 200).map((x) => h("tr", {}, h("td", { class: "small" }, x.source), h("td", {}, x.term.slice(0, 120)), h("td", {}, x.score)))))) : null,
+  );
+  if (r.status === "RUNNING") runPoll = setTimeout(() => $("#modal").open && openRun(id), 5000);
+}
+const shopCurrency = (id) => state.shops.find((s) => s.id === id)?.currency || "";
 
 // ---------- CRM ----------
 

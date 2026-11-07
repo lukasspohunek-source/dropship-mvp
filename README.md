@@ -22,6 +22,7 @@ Shopify e-shopy ── webhook orders/paid ──► dropship-mvp ──► AliE
 | **Katalog** | import produktu z AE podle odkazu (koncept v Shopify), cenové pravidlo per e-shop, nákupní cena do Shopify, hlídání cen a skladu, stažené produkty → sklad 0 |
 | **CRM** | zákazníci z objednávek (napříč e-shopy), poznámky, úkoly, leady, reklamace a odstoupení se lhůtami, segmenty + CSV, přehled |
 | **Compliance** | GPSR údaje u produktů, údaje prodávajícího, formulář pro odstoupení, GDPR export/anonymizace/retence, DPH report (OSS/IOSS) |
+| **AI trendy** | signály z Google Trends/Shopping (SerpApi), Seznamu, Heureky, TikToku a Instagramu (Bright Data) + bestsellery AliExpressu → Claude vybere kandidáty, kód spočítá marži, import jedním klepnutím |
 | **Rozhraní** | `/app` – mobilní web, přihlášení admin tokenem |
 
 > Compliance funkce jsou **pomůcka**, ne právní ani daňové poradenství. Obchodní podmínky, GPSR a DPH si nech ověřit.
@@ -72,6 +73,25 @@ V rozhraní **Nastavení → AliExpress → Propojit** (OAuth, token se pak obno
 - **Produkty → detail → GPSR**: výrobce, odpovědná osoba v EU, upozornění. Přehled vidíš na úvodní stránce.
 - `OSS_FX_TO_EUR` – kurzy pro DPH report; `RETENTION_YEARS` – automatická anonymizace (0 = vypnuto).
 
+## AI trendy
+
+Produkty → AI trendy → zadej témata (např. „lampa, organizér“). Běh trvá 1–3 minuty a stojí kredity API.
+
+| Zdroj | Jak | Proměnná | Poznámka |
+|---|---|---|---|
+| AliExpress bestsellery | DS API `recommend.feed.get` | (AE účet) | oficiální, zdarma |
+| Google Trends + Shopping | SerpApi | `SERPAPI_KEY` | placené, oficiální API |
+| Seznam | našeptávač | `TRENDS_SEZNAM` | neoficiální, formát se může změnit |
+| Heureka | Bright Data Web Unlocker | `BRIGHTDATA_API_KEY`, `BRIGHTDATA_UNLOCKER_ZONE` | scraping – v rozporu s podmínkami |
+| TikTok, Instagram | Bright Data Web Scraper API | `BRIGHTDATA_*_DATASET_ID` | scraping – v rozporu s podmínkami, ID datasetu z katalogu Bright Data |
+| Vyhodnocení | Claude API (`claude-opus-5-5`, strukturovaný výstup) | `ANTHROPIC_API_KEY` | bez klíče jen surové signály |
+
+- Každý zdroj se zapne jen s vyplněným klíčem; výpadek jednoho nezastaví ostatní.
+- AI smí přiřadit jen produkt ze seznamu AE bestsellerů – vymyšlená ID se zahodí. Marži počítá kód podle cenového pravidla e-shopu, ne AI.
+- Signály z internetu jdou do AI jako data; AI má pokyn ignorovat instrukce v nich.
+- Limit `TRENDS_MAX_RUNS_PER_DAY` (výchozí 10) chrání před nečekanými náklady.
+- Neověřeno naostro (bez klíčů): tvar odpovědí SerpApi, Bright Data datasetů, Seznam našeptávače a AE feedů – parsování je tolerantní, ale první běhy zkontroluj v „Surová data“.
+
 ## Cenové pravidlo
 
 ```
@@ -116,4 +136,3 @@ Postup: `DRY_RUN=true` → `DRY_RUN=false, AUTO_PAY=false` (platíš ručně) �
 - Jeden proces (zámky v paměti + SQLite). Pro více instancí by bylo potřeba Postgres.
 - Zrušení/vrácení se do AE nepropisuje – řeš ručně, evidenci vedeš v Reklamacích.
 - Databáze z verze 0.1 (bez více e-shopů) se odmítne – MVP ještě neběželo v produkci.
-- AI vyhledávání trendů zatím chybí (čeká na volbu zdrojů dat).

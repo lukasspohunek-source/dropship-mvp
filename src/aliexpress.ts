@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { DropshipperClient } from "ae_sdk";
 import type { Repo } from "./db.js";
+import type { AeTrendProduct } from "./trends.js";
 import type { AeProduct, AeSku, CatalogSource, PlaceResult, ShippingAddress, Supplier, SupplierLine, SupplierOrderInfo } from "./types.js";
 
 interface StoredToken {
@@ -277,6 +278,49 @@ export class AliExpressSupplier implements Supplier, CatalogSource {
     const r = findResult(res.data);
     if (!r) throw new Error(`AE product.get ${productId}: neočekávaná odpověď`);
     return parseAeProduct(r, this.cfg.payCurrency);
+  }
+
+  /**
+   * Bestsellery z doporučených DS feedů (aliexpress.ds.recommend.feed.get).
+   * Bez zadaných feedů vezme první dva z aliexpress.ds.feedname.get.
+   */
+  async getTrendingProducts(country: string, feeds: string[] = []): Promise<AeTrendProduct[]> {
+    const client = await this.client();
+    let names = feeds;
+    if (!names.length) {
+      const fr: any = await client.raw("aliexpress.ds.feedname.get", {});
+      if (!fr.ok) throw new Error(`AE feedname.get: ${fr.message}`);
+      const result = findResult(fr.data);
+      names = unwrapList(result?.promos ?? result).map((p: any) => String(p?.promo_name ?? "")).filter(Boolean).slice(0, 2);
+      if (!names.length) throw new Error("AE nevrátil žádné feedy – nastav AE_TREND_FEEDS");
+    }
+    const out: AeTrendProduct[] = [];
+    for (const feed of names) {
+      const res: any = await client.raw("aliexpress.ds.recommend.feed.get", {
+        feed_name: feed,
+        country,
+        target_currency: this.cfg.payCurrency,
+        target_language: "EN",
+        page_size: 50,
+        sort: "volumeDesc",
+      });
+      if (!res.ok) throw new Error(`AE recommend.feed.get (${feed}): ${res.message}`);
+      const result = findResult(res.data);
+      for (const p of unwrapList(result?.products ?? result?.result?.products)) {
+        if (!p?.product_id) continue;
+        const rating = parseFloat(String(p.evaluate_rate ?? "").replace("%", ""));
+        out.push({
+          productId: String(p.product_id),
+          title: String(p.product_title ?? "").slice(0, 200),
+          priceAe: num(p.target_sale_price ?? p.sale_price ?? p.target_app_sale_price),
+          currency: String(p.target_sale_price_currency ?? p.sale_price_currency ?? this.cfg.payCurrency),
+          orders: p.lastest_volume != null ? num(p.lastest_volume) : null,
+          rating: Number.isFinite(rating) ? rating : null,
+          url: p.product_detail_url ?? null,
+        });
+      }
+    }
+    return [...new Map(out.map((p) => [p.productId, p])).values()].sort((a, b) => (b.orders ?? 0) - (a.orders ?? 0));
   }
 
   async getOrder(aeOrderId: string): Promise<SupplierOrderInfo> {

@@ -12,6 +12,7 @@ import { OrderService } from "../src/orders.js";
 import { createApp } from "../src/server.js";
 import { ShopService } from "../src/shops.js";
 import { TrackingService } from "../src/tracking.js";
+import { TrendService, trendsRouter } from "../src/trends.js";
 import type { AeProduct, CatalogSource, IncomingOrder, PlaceResult, Store, Supplier, SupplierOrderInfo } from "../src/types.js";
 
 const PORT = Number(process.env.PORT ?? 3100);
@@ -100,11 +101,32 @@ crm.createTask({ title: "Zavolat hotelu Šumava kvůli nabídce", dueDate: new D
 crm.createTask({ title: "Objednat vzorky nových lamp", dueDate: new Date().toISOString().slice(0, 10) });
 crm.createSegment({ name: "Věrní zákazníci CZ", filter: { country: "CZ", minOrders: 1 } });
 
+const trends = new TrendService(
+  repo,
+  shops,
+  [
+    { id: "google_trends", label: "Google Trends (demo)", fetch: async (q) => q.seeds.map((s, i) => ({ source: "google_trends", term: `${s} usb-c`, score: 90 - i * 10, detail: "roste +250 %" })) },
+    { id: "tiktok", label: "TikTok (demo)", caveat: "Scraping přes Bright Data – v rozporu s podmínkami platformy.", fetch: async () => [{ source: "tiktok", term: "Stolní lampa, která se nabíjí magnetem #lampa", score: 82, detail: "1,2 mil. zhlédnutí" }] },
+  ],
+  async () => [{ productId: "1005006543210987", title: "Magnetic LED desk lamp USB-C", priceAe: 6.1, currency: "USD", orders: 5400, rating: 96.4, url: null }],
+  {
+    analyze: async (i) => ({
+      summary: `Napříč zdroji roste zájem o nabíjecí lampy (${i.signals.length} signálů). Doporučuji otestovat 1–2 varianty.`,
+      candidates: [
+        { name: "Magnetická LED lampa s USB-C", why: "Roste na Google Trends i TikToku, malá a lehká, AliExpress má produkt s 5 400 objednávkami.", evidence: ["google_trends: lampa usb-c +250 %", "tiktok: 1,2 mil. zhlédnutí"], searchKeywords: ["magnetic led desk lamp"], aeProductId: "1005006543210987", expectedSellPrice: 349, score: 86, risks: ["Li-ion baterie – omezení přepravy", "Elektro – CE/GPSR údaje od výrobce"] },
+        { name: "Organizér kabelů na stůl", why: "Doplňkový prodej k lampě, stabilní poptávka.", evidence: ["google_trends: organizér kabelů"], searchKeywords: ["desk cable organizer"], aeProductId: null, expectedSellPrice: null, score: 58, risks: [] },
+      ],
+    }),
+  },
+  { maxRunsPerDay: 50 },
+  catalog,
+);
+
 const app = createApp({
   repo, orders, tracking, shops,
   oauth: { authorizeUrl: () => "https://example.com/ae-oauth-demo", handleCallback: async () => {}, isAuthorized: () => true },
   onOrderCreated: (id, inc) => void crm.recordOrder(id, inc),
-  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance)],
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance), trendsRouter(trends, () => orders.reprocessWaitingForMapping())],
   cfg: { adminToken: TOKEN, publicBaseUrl: `http://localhost:${PORT}`, dryRun: false, autoPay: true },
 });
 app.listen(PORT, () => console.log(`DEMO: http://localhost:${PORT}/app/  token: ${TOKEN}`));

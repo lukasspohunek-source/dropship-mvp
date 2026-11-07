@@ -16,8 +16,10 @@
     "demo": "node --disable-warning=ExperimentalWarning --import tsx scripts/demo.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "ae_sdk": "0.6.0",
-    "express": "5.1.0"
+    "express": "5.1.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/express": "5.0.3",

@@ -1,5 +1,5 @@
 /** Verze schématu; zvyš při změně a doplň migraci v db.ts. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS shops (
@@ -188,6 +188,19 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_order ON events(order_id);
+
+CREATE TABLE IF NOT EXISTS trend_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  shop_id INTEGER NOT NULL REFERENCES shops(id),
+  seeds_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  signals_json TEXT,
+  source_errors_json TEXT,
+  result_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
 
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,

@@ -64,3 +64,5 @@ td, th { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: lef
 #toast.err { background: var(--err); color: #fff; }
 pre { white-space: pre-wrap; font-size: .85rem; background: var(--bg); padding: 10px; border-radius: 8px; overflow-x: auto; }
 @media (min-width: 900px) { .tabs { position: sticky; top: 49px; bottom: auto; max-width: 900px; margin: 0 auto; border: 1px solid var(--line); border-top: 0; } body { padding-bottom: 0; } }
+details summary { cursor: pointer; color: var(--muted); margin: .6rem 0; }
+.card a { color: var(--accent); align-self: center; }

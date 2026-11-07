@@ -69,7 +69,8 @@ export class Repo {
     this.db.exec("BEGIN");
     try {
       this.db.exec(SCHEMA);
-      // Budoucí migrace: if (v < 2) this.db.exec("ALTER TABLE ...");
+      // v1 → v2: přibyla tabulka trend_runs (vytvoří ji CREATE TABLE IF NOT EXISTS výše).
+      // Budoucí změny sloupců: if (v < 3) this.db.exec("ALTER TABLE ...");
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       this.db.exec("COMMIT");
     } catch (e) {
