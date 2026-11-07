@@ -1,6 +1,7 @@
 import { AliExpressSupplier } from "./aliexpress.js";
 import { CatalogService, catalogRouter } from "./catalog.js";
 import { loadConfig } from "./config.js";
+import { CrmService, crmRouter } from "./crm.js";
 import { SecretBox } from "./crypto.js";
 import { Repo } from "./db.js";
 import { OrderService } from "./orders.js";
@@ -32,6 +33,7 @@ const supplier = new AliExpressSupplier(repo, cfg.ae);
 const orders = new OrderService(repo, supplier, cfg.orders, (shopId) => shops.get(shopId).autoPayMaxOrderTotal);
 const tracking = new TrackingService(repo, supplier, (shopId) => shops.store(shopId), cfg.tracking);
 const catalog = new CatalogService(repo, supplier, shops);
+const crm = new CrmService(repo);
 
 const app = createApp({
   repo,
@@ -39,7 +41,8 @@ const app = createApp({
   tracking,
   oauth: supplier,
   shops,
-  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping())],
+  onOrderCreated: (id, incoming) => void crm.recordOrder(id, incoming),
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm)],
   cfg: { adminToken: cfg.adminToken, publicBaseUrl: cfg.publicBaseUrl, dryRun: cfg.orders.dryRun, autoPay: cfg.orders.autoPay.enabled },
 });
 
