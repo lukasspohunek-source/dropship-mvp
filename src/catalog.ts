@@ -43,7 +43,7 @@ const SHIPS_FROM = /ships?\s*from|odesíláno z|place of dispatch/i;
 const optKey = (o: { name: string; value: string }[]) =>
   o
     .map((x) => `${x.name.toLowerCase()}=${x.value.toLowerCase()}`)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .join("|");
 
 /**

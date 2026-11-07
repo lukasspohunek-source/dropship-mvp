@@ -170,7 +170,7 @@ export class CrmService {
 
   createCustomer(b: any) {
     const email = optStr(b?.email, "email", 320)?.toLowerCase() ?? null;
-    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ValidationError("Neplatný e-mail");
+    if (email && !/^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$/.test(email)) throw new ValidationError("Neplatný e-mail");
     if (email && this.db().prepare("SELECT 1 FROM customers WHERE email = ?").get(email)) throw new ConflictError("Zákazník s tímto e-mailem už existuje");
     const t = this.ts();
     const consent = b?.acceptsMarketing === true;

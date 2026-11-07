@@ -308,7 +308,7 @@ export class AliExpressSupplier implements Supplier, CatalogSource {
       const result = findResult(res.data);
       for (const p of unwrapList(result?.products ?? result?.result?.products)) {
         if (!p?.product_id) continue;
-        const rating = parseFloat(String(p.evaluate_rate ?? "").replace("%", ""));
+        const rating = Number.parseFloat(String(p.evaluate_rate ?? "").replace("%", ""));
         out.push({
           productId: String(p.product_id),
           title: String(p.product_title ?? "").slice(0, 200),

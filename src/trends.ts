@@ -135,13 +135,33 @@ export class SeznamSuggestSource implements TrendSource {
 
 // ---------- Bright Data: TikTok, Instagram, Heureka ----------
 
+/** Odstraní celé bloky <tag>…</tag> lineárně (bez regexu se zpětným vyhledáváním). */
+function stripBlocks(html: string, tags: string[]): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    let next = -1;
+    let tag = "";
+    for (const t of tags) {
+      const at = lower.indexOf(`<${t}`, i);
+      if (at !== -1 && (next === -1 || at < next)) (next = at), (tag = t);
+    }
+    if (next === -1) break;
+    out += html.slice(i, next) + " ";
+    const end = lower.indexOf(`</${tag}>`, next);
+    i = end === -1 ? html.length : end + tag.length + 3;
+  }
+  return out + html.slice(i);
+}
+
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+  // Strop velikosti: stránka z Unlockeru může mít jednotky MB, AI stačí začátek.
+  return stripBlocks(html.slice(0, 500_000), ["script", "style", "noscript", "svg"])
+    .replace(/<[^>]*>/g, " ")
+    .replaceAll("&nbsp;", " ")
+    .replaceAll("&amp;", "&")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/\s+/g, " ")
     .trim();
 }

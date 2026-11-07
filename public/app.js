@@ -153,7 +153,7 @@ const RESOLUTION = { REFUND: "Vrácení peněz", REPLACEMENT: "Výměna", REPAIR
 
 async function viewDashboard(root) {
   const [d, c] = await Promise.all([api("/crm/dashboard"), api("/compliance/overview")]);
-  const hl = state.health;
+  const hl = state.health || {};
   put(root, 
     h("h1", {}, "Přehled"),
     !hl.aliexpressAuthorized ? h("div", { class: "alert err" }, "AliExpress není propojený. ", h("button", { class: "link", onclick: connectAe }, "Propojit")) : null,
@@ -719,7 +719,7 @@ function go(tab, sub) {
   if (sub) state.sub[tab] = sub;
   closeModal();
   try { history.replaceState(null, "", `#${tab}${state.sub[tab] ? "/" + state.sub[tab] : ""}`); } catch { /* ignore */ }
-  rerender();
+  void rerender();
 }
 
 let renderSeq = 0;
@@ -759,7 +759,7 @@ async function start() {
   } catch (e) {
     return toast(e.message, true);
   }
-  rerender();
+  void rerender();
 }
 
 $("#loginForm").addEventListener("submit", async (e) => {
@@ -768,7 +768,7 @@ $("#loginForm").addEventListener("submit", async (e) => {
   try {
     await api("/shops");
     $("#token").value = "";
-    start();
+    void start();
   } catch (err) {
     toast(err.message, true);
   }
@@ -777,4 +777,5 @@ $("#logout").addEventListener("click", logout);
 for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => go(b.dataset.tab));
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 
-getToken() ? start() : logout();
+if (getToken()) void start();
+else logout();
