@@ -1,9 +1,11 @@
 import type { OrderRow, Repo } from "./db.js";
+import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import type { IncomingOrder, OrderLine, OrderStatus, ShippingAddress, Supplier, SupplierLine } from "./types.js";
 
 export interface OrderConfig {
   dryRun: boolean;
-  autoPay: { enabled: boolean; maxOrderTotal: number; maxPerDay: number };
+  /** Globální: hlavní vypínač a denní limit přes všechny e-shopy. */
+  autoPay: { enabled: boolean; maxPerDay: number };
 }
 
 /** Stavy, ze kterých smí běžné zpracování pokračovat. */
@@ -21,9 +23,7 @@ export function missingAddressFields(a: ShippingAddress | null): string[] {
   return miss;
 }
 
-export class NotFoundError extends Error {}
-export class ConflictError extends Error {}
-export class ValidationError extends Error {}
+export { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 
 export class OrderService {
   /** Zabraňuje souběžnému zpracování stejné objednávky v rámci procesu. */
@@ -33,11 +33,13 @@ export class OrderService {
     private repo: Repo,
     private supplier: Supplier,
     private cfg: OrderConfig,
+    /** Limit automatické platby jedné objednávky v měně daného e-shopu. */
+    private shopMaxTotal: (shopId: number) => number,
     private now: () => Date = () => new Date(),
   ) {}
 
-  ingest(o: IncomingOrder): { id: number; created: boolean } {
-    const r = this.repo.insertOrder(o);
+  ingest(o: IncomingOrder, shopId: number): { id: number; created: boolean } {
+    const r = this.repo.insertOrder(o, shopId);
     if (r.created) this.repo.log(r.id, "info", `Přijata objednávka ${o.name} (${o.totalPrice} ${o.currency})`);
     return r;
   }
@@ -160,12 +162,9 @@ export class OrderService {
       } else {
         const since = new Date(this.now().getTime() - 24 * 3600 * 1000).toISOString();
         const paidToday = this.repo.countAutoPaidSince(since);
-        if (o.total_price > this.cfg.autoPay.maxOrderTotal)
-          return this.set(
-            o,
-            "NEEDS_APPROVAL",
-            `Cena ${o.total_price} ${o.currency} je nad limitem ${this.cfg.autoPay.maxOrderTotal} – čeká na schválení`,
-          );
+        const max = this.shopMaxTotal(o.shop_id);
+        if (o.total_price > max)
+          return this.set(o, "NEEDS_APPROVAL", `Cena ${o.total_price} ${o.currency} je nad limitem ${max} – čeká na schválení`);
         if (paidToday >= this.cfg.autoPay.maxPerDay)
           return this.set(
             o,

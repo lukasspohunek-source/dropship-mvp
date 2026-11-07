@@ -1,13 +1,25 @@
 import { AliExpressSupplier } from "./aliexpress.js";
 import { loadConfig } from "./config.js";
+import { SecretBox } from "./crypto.js";
 import { Repo } from "./db.js";
 import { OrderService } from "./orders.js";
 import { createApp } from "./server.js";
-import { ShopifyStore } from "./shopify.js";
+import { ShopService } from "./shops.js";
 import { TrackingService } from "./tracking.js";
 
 const cfg = loadConfig();
 const repo = new Repo(cfg.dbPath);
+const shops = new ShopService(repo, new SecretBox(cfg.secretKey), {
+  apiVersion: cfg.shopify.apiVersion,
+  autoPayMaxOrderTotal: cfg.orders.autoPay.maxOrderTotal,
+  pricing: cfg.pricingDefaults,
+});
+
+// První e-shop z .env (pohodlné pro jeden obchod; další přidáš přes POST /admin/shops).
+const b = cfg.shopify.bootstrap;
+if (b && !shops.findForWebhook(b.domain)) {
+  shops.create({ domain: b.domain, name: b.name, currency: b.currency, country: b.country, adminToken: b.adminToken, webhookSecret: b.webhookSecret });
+}
 
 // Proces mohl spadnout uprostřed odesílání → nevíme, jestli objednávka v AE vznikla.
 for (const id of repo.idsByStatus("PLACING")) {
@@ -16,46 +28,37 @@ for (const id of repo.idsByStatus("PLACING")) {
 }
 
 const supplier = new AliExpressSupplier(repo, cfg.ae);
-const store = new ShopifyStore(cfg.shopify);
-const orders = new OrderService(repo, supplier, cfg.orders);
-const tracking = new TrackingService(repo, supplier, store, cfg.tracking);
+const orders = new OrderService(repo, supplier, cfg.orders, (shopId) => shops.get(shopId).autoPayMaxOrderTotal);
+const tracking = new TrackingService(repo, supplier, (shopId) => shops.store(shopId), cfg.tracking);
 
 const app = createApp({
   repo,
   orders,
   tracking,
   oauth: supplier,
-  cfg: {
-    adminToken: cfg.adminToken,
-    webhookSecret: cfg.shopify.webhookSecret,
-    shop: cfg.shopify.shop,
-    publicBaseUrl: cfg.publicBaseUrl,
-    dryRun: cfg.orders.dryRun,
-  },
+  shops,
+  cfg: { adminToken: cfg.adminToken, publicBaseUrl: cfg.publicBaseUrl, dryRun: cfg.orders.dryRun, autoPay: cfg.orders.autoPay.enabled },
 });
 
 const server = app.listen(cfg.port, () => {
   console.log(
-    `dropship-mvp běží na :${cfg.port} | DRY_RUN=${cfg.orders.dryRun} | AUTO_PAY=${cfg.orders.autoPay.enabled}` +
-      ` (limit ${cfg.orders.autoPay.maxOrderTotal}, ${cfg.orders.autoPay.maxPerDay}/den)`,
+    `dropship-mvp běží na :${cfg.port} | e-shopů: ${shops.list().length} | DRY_RUN=${cfg.orders.dryRun} | AUTO_PAY=${cfg.orders.autoPay.enabled} (${cfg.orders.autoPay.maxPerDay}/den)`,
   );
 });
 
-const orderTimer = setInterval(() => {
-  orders.processPending().catch((e) => repo.log(null, "error", `processPending: ${(e as Error).message}`));
-}, cfg.orders.pollSeconds * 1000);
+const timers: NodeJS.Timeout[] = [];
+const every = (ms: number, name: string, fn: () => Promise<unknown>) =>
+  timers.push(setInterval(() => void fn().catch((e) => repo.log(null, "error", `${name}: ${(e as Error).message}`)), ms));
 
-const trackingTimer = setInterval(() => {
-  tracking
-    .syncAll()
-    .then((r) => r.checked && console.log(`tracking: ${JSON.stringify(r)}`))
-    .catch((e) => repo.log(null, "error", `tracking: ${(e as Error).message}`));
-}, cfg.tracking.intervalMinutes * 60 * 1000);
+every(cfg.orders.pollSeconds * 1000, "processPending", () => orders.processPending());
+every(cfg.tracking.intervalMinutes * 60_000, "tracking", async () => {
+  const r = await tracking.syncAll();
+  if (r.checked) console.log(`tracking: ${JSON.stringify(r)}`);
+});
 
 function shutdown(sig: string) {
   console.log(`${sig} – ukončuji`);
-  clearInterval(orderTimer);
-  clearInterval(trackingTimer);
+  for (const t of timers) clearInterval(t);
   server.close(() => {
     repo.close();
     process.exit(0);

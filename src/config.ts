@@ -1,14 +1,18 @@
+import { validatePricing, type PricingRules } from "./shops.js";
+
 export interface Config {
   port: number;
   dbPath: string;
   publicBaseUrl: string;
   adminToken: string;
+  /** Klíč pro šifrování tokenů e-shopů v DB. Při ztrátě je nutné tokeny zadat znovu. */
+  secretKey: string;
   shopify: {
-    shop: string;
-    adminToken: string;
-    webhookSecret: string;
     apiVersion: string;
+    /** Volitelně: první e-shop založený z proměnných prostředí při startu. */
+    bootstrap: { domain: string; adminToken: string; webhookSecret: string; name: string; currency: string; country: string } | null;
   };
+  pricingDefaults: PricingRules;
   ae: {
     appKey: string;
     appSecret: string;
@@ -20,7 +24,7 @@ export interface Config {
     dryRun: boolean;
     autoPay: {
       enabled: boolean;
-      /** Max. celková cena objednávky v měně e-shopu (např. Kč) pro automatickou platbu. */
+      /** Výchozí limit jedné objednávky pro nově přidané e-shopy (v jejich měně). */
       maxOrderTotal: number;
       /** Max. počet automaticky placených objednávek za posledních 24 h. */
       maxPerDay: number;
@@ -66,11 +70,29 @@ export function loadConfig(env: Env = process.env): Config {
     dbPath: opt("DB_PATH", "./dropship.db"),
     publicBaseUrl: req("PUBLIC_BASE_URL").replace(/\/+$/, ""),
     adminToken: req("ADMIN_TOKEN"),
+    secretKey: req("SECRET_KEY"),
     shopify: {
-      shop: req("SHOPIFY_SHOP"),
-      adminToken: req("SHOPIFY_ADMIN_TOKEN"),
-      webhookSecret: req("SHOPIFY_WEBHOOK_SECRET"),
       apiVersion: opt("SHOPIFY_API_VERSION", "2026-10"),
+      bootstrap: env.SHOPIFY_SHOP?.trim()
+        ? {
+            domain: env.SHOPIFY_SHOP.trim().toLowerCase(),
+            adminToken: req("SHOPIFY_ADMIN_TOKEN"),
+            webhookSecret: req("SHOPIFY_WEBHOOK_SECRET"),
+            name: opt("SHOPIFY_SHOP_NAME", env.SHOPIFY_SHOP.trim()),
+            currency: opt("SHOPIFY_SHOP_CURRENCY", "CZK").toUpperCase(),
+            country: opt("SHOPIFY_SHOP_COUNTRY", "CZ").toUpperCase(),
+          }
+        : null,
+    },
+    pricingDefaults: {
+      fxRate: num("PRICE_FX_RATE", 23),
+      multiplier: num("PRICE_MULTIPLIER", 2.2),
+      fixedAdd: num("PRICE_FIXED_ADD", 0),
+      roundStep: num("PRICE_ROUND_STEP", 10),
+      roundOffset: num("PRICE_ROUND_OFFSET", 1),
+      stockBuffer: num("STOCK_BUFFER", 2),
+      stockCap: num("STOCK_CAP", 50),
+      priceAlertPct: num("PRICE_ALERT_PCT", 15),
     },
     ae: {
       appKey: req("AE_APP_KEY"),
@@ -101,7 +123,7 @@ export function loadConfig(env: Env = process.env): Config {
 
   if (missing.length) throw new Error(`Chybí proměnné prostředí: ${missing.join(", ")}`);
   if (cfg.adminToken.length < 24) throw new Error("ADMIN_TOKEN musí mít aspoň 24 znaků");
-  if (!/^[a-z0-9-]+\.myshopify\.com$/.test(cfg.shopify.shop))
-    throw new Error('SHOPIFY_SHOP musí být ve tvaru "nazev.myshopify.com"');
+  if (cfg.secretKey.length < 32) throw new Error("SECRET_KEY musí mít aspoň 32 znaků");
+  validatePricing(cfg.pricingDefaults);
   return cfg;
 }

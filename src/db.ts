@@ -1,69 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
+import { SCHEMA, SCHEMA_VERSION } from "./schema.js";
 import type { IncomingOrder, Mapping, OrderStatus, SupplierLine } from "./types.js";
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS orders (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  shopify_order_id TEXT NOT NULL UNIQUE,
-  shopify_order_gid TEXT NOT NULL,
-  name TEXT NOT NULL,
-  currency TEXT NOT NULL,
-  total_price REAL NOT NULL,
-  email TEXT,
-  address_json TEXT,
-  lines_json TEXT NOT NULL,
-  supplier_lines_json TEXT,
-  status TEXT NOT NULL,
-  try_to_pay INTEGER NOT NULL DEFAULT 0,
-  ae_order_ids_json TEXT,
-  last_error TEXT,
-  placed_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
-CREATE TABLE IF NOT EXISTS shipments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  order_id INTEGER NOT NULL REFERENCES orders(id),
-  ae_order_id TEXT NOT NULL UNIQUE,
-  ae_order_status TEXT,
-  logistics_status TEXT,
-  tracking_number TEXT,
-  carrier TEXT,
-  fulfillment_ids_json TEXT,
-  fulfilled_at TEXT,
-  unpaid_warned INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS mappings (
-  shopify_variant_id TEXT PRIMARY KEY,
-  ae_product_id TEXT NOT NULL,
-  ae_sku_attr TEXT,
-  logistics_service_name TEXT,
-  note TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  order_id INTEGER,
-  level TEXT NOT NULL,
-  message TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_events_order ON events(order_id);
-
-CREATE TABLE IF NOT EXISTS kv (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-`;
 
 export interface OrderRow {
   id: number;
+  shop_id: number;
+  customer_id: number | null;
+  total_tax: number;
+  country_code: string | null;
   shopify_order_id: string;
   shopify_order_gid: string;
   name: string;
@@ -111,7 +57,29 @@ export class Repo {
   constructor(path: string, private now: () => Date = () => new Date()) {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-    this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    const v = Number((this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+    const hasOrders = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='orders'").get();
+    if (v === 0 && hasOrders)
+      throw new Error("Databáze je ze staré verze 0.1 bez podpory více e-shopů – smaž soubor DB (MVP ještě neběželo v produkci)");
+    if (v > SCHEMA_VERSION) throw new Error(`Databáze má novější schéma (${v}) než aplikace (${SCHEMA_VERSION})`);
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec(SCHEMA);
+      // Budoucí migrace: if (v < 2) this.db.exec("ALTER TABLE ...");
+      this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  now_(): string {
+    return this.ts();
   }
 
   private ts(): string {
@@ -125,7 +93,7 @@ export class Repo {
   // ---------- orders ----------
 
   /** Vloží objednávku, pokud ještě neexistuje (Shopify webhooky opakuje). */
-  insertOrder(o: IncomingOrder): { id: number; created: boolean } {
+  insertOrder(o: IncomingOrder, shopId: number): { id: number; created: boolean } {
     const existing = this.db
       .prepare("SELECT id FROM orders WHERE shopify_order_id = ?")
       .get(o.shopifyOrderId) as { id: number } | undefined;
@@ -133,16 +101,19 @@ export class Repo {
     const t = this.ts();
     const r = this.db
       .prepare(
-        `INSERT INTO orders (shopify_order_id, shopify_order_gid, name, currency, total_price, email,
-           address_json, lines_json, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?)`,
+        `INSERT INTO orders (shop_id, shopify_order_id, shopify_order_gid, name, currency, total_price, total_tax,
+           country_code, email, address_json, lines_json, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?)`,
       )
       .run(
+        shopId,
         o.shopifyOrderId,
         o.shopifyOrderGid,
         o.name,
         o.currency,
         o.totalPrice,
+        o.totalTax,
+        o.address?.countryCode ?? null,
         o.email,
         o.address ? JSON.stringify(o.address) : null,
         JSON.stringify(o.lines),
@@ -156,14 +127,18 @@ export class Repo {
     return this.db.prepare("SELECT * FROM orders WHERE id = ?").get(id) as OrderRow | undefined;
   }
 
-  listOrders(status?: string, limit = 100): OrderRow[] {
-    if (status)
-      return this.db
-        .prepare("SELECT * FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?")
-        .all(status, limit) as unknown as OrderRow[];
-    return this.db
-      .prepare("SELECT * FROM orders ORDER BY id DESC LIMIT ?")
-      .all(limit) as unknown as OrderRow[];
+  listOrders(f: { status?: string; shopId?: number; customerId?: number } = {}, limit = 200): OrderRow[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (f.status) (where.push("status = ?"), args.push(f.status));
+    if (f.shopId) (where.push("shop_id = ?"), args.push(f.shopId));
+    if (f.customerId) (where.push("customer_id = ?"), args.push(f.customerId));
+    const sql = `SELECT * FROM orders ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT ?`;
+    return this.db.prepare(sql).all(...args, limit) as unknown as OrderRow[];
+  }
+
+  setOrderCustomer(orderId: number, customerId: number): void {
+    this.db.prepare("UPDATE orders SET customer_id = ? WHERE id = ?").run(customerId, orderId);
   }
 
   idsByStatus(status: OrderStatus): number[] {
@@ -274,27 +249,28 @@ export class Repo {
 
   getMapping(variantId: string): Mapping | undefined {
     const r = this.db.prepare("SELECT * FROM mappings WHERE shopify_variant_id = ?").get(variantId) as
-      | Record<string, string | null>
+      | Record<string, string | number | null>
       | undefined;
     return r ? rowToMapping(r) : undefined;
   }
 
   listMappings(): Mapping[] {
     return (
-      this.db.prepare("SELECT * FROM mappings ORDER BY shopify_variant_id").all() as Record<string, string | null>[]
+      this.db.prepare("SELECT * FROM mappings ORDER BY shopify_variant_id").all() as Record<string, string | number | null>[]
     ).map(rowToMapping);
   }
 
   upsertMapping(m: Mapping): void {
     this.db
       .prepare(
-        `INSERT INTO mappings (shopify_variant_id, ae_product_id, ae_sku_attr, logistics_service_name, note, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO mappings (shopify_variant_id, shop_id, ae_product_id, ae_sku_attr, logistics_service_name, note, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(shopify_variant_id) DO UPDATE SET ae_product_id = excluded.ae_product_id,
+           shop_id = COALESCE(excluded.shop_id, mappings.shop_id),
            ae_sku_attr = excluded.ae_sku_attr, logistics_service_name = excluded.logistics_service_name,
            note = excluded.note, updated_at = excluded.updated_at`,
       )
-      .run(m.shopifyVariantId, m.aeProductId, m.aeSkuAttr, m.logisticsServiceName, m.note, this.ts());
+      .run(m.shopifyVariantId, m.shopId ?? null, m.aeProductId, m.aeSkuAttr, m.logisticsServiceName, m.note, this.ts());
   }
 
   deleteMapping(variantId: string): boolean {
@@ -338,12 +314,13 @@ export class Repo {
   }
 }
 
-function rowToMapping(r: Record<string, string | null>): Mapping {
+function rowToMapping(r: Record<string, string | number | null>): Mapping {
   return {
     shopifyVariantId: String(r.shopify_variant_id),
+    shopId: r.shop_id != null ? Number(r.shop_id) : null,
     aeProductId: String(r.ae_product_id),
-    aeSkuAttr: r.ae_sku_attr ?? null,
-    logisticsServiceName: r.logistics_service_name ?? null,
-    note: r.note ?? null,
+    aeSkuAttr: (r.ae_sku_attr as string | null) ?? null,
+    logisticsServiceName: (r.logistics_service_name as string | null) ?? null,
+    note: (r.note as string | null) ?? null,
   };
 }

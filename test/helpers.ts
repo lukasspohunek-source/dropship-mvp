@@ -1,4 +1,6 @@
+import { SecretBox } from "../src/crypto.js";
 import { Repo } from "../src/db.js";
+import { ShopService, type PricingRules } from "../src/shops.js";
 import type { IncomingOrder, PlaceResult, Store, Supplier, SupplierOrderInfo } from "../src/types.js";
 
 export const memRepo = (now?: () => Date) => new Repo(":memory:", now);
@@ -10,7 +12,9 @@ export function order(over: Partial<IncomingOrder> = {}): IncomingOrder {
     name: "#1001",
     currency: "CZK",
     totalPrice: 899,
+    totalTax: 156.02,
     email: "zakaznik@example.com",
+    customer: { email: "zakaznik@example.com", name: "Jan Novák", phone: "+420777123456", acceptsMarketing: false, consentAt: null },
     address: {
       fullName: "Jan Novák",
       address1: "Hlavní 12",
@@ -65,3 +69,33 @@ export const MAPPING = {
   logisticsServiceName: "CAINIAO_STANDARD",
   note: null,
 };
+
+export const PRICING: PricingRules = {
+  fxRate: 23,
+  multiplier: 2,
+  fixedAdd: 0,
+  roundStep: 10,
+  roundOffset: 1,
+  stockBuffer: 2,
+  stockCap: 50,
+  priceAlertPct: 15,
+};
+
+export const BOX = new SecretBox("test-secret-key-0123456789-abcdefghij");
+
+export function shopService(repo: Repo, fetchImpl?: typeof fetch) {
+  return new ShopService(repo, BOX, { apiVersion: "2026-10", autoPayMaxOrderTotal: 1500, pricing: PRICING }, fetchImpl);
+}
+
+/** Vytvoří testovací e-shop a vrátí jeho id. */
+export function seedShop(repo: Repo, over: Partial<{ domain: string; currency: string; country: string; max: number; secret: string }> = {}) {
+  return shopService(repo).create({
+    domain: over.domain ?? "pokovo.myshopify.com",
+    name: "Pokovo",
+    currency: over.currency ?? "CZK",
+    country: over.country ?? "CZ",
+    adminToken: "shpat_test",
+    webhookSecret: over.secret ?? "whsec_test",
+    autoPayMaxOrderTotal: over.max ?? 1500,
+  }).id;
+}

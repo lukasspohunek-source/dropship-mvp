@@ -40,13 +40,24 @@ export interface IncomingOrder {
   name: string; // "#1001"
   currency: string;
   totalPrice: number;
+  totalTax: number;
   email: string | null;
   address: ShippingAddress | null;
   lines: OrderLine[];
+  customer: IncomingCustomer | null;
+}
+
+export interface IncomingCustomer {
+  email: string | null;
+  name: string | null;
+  phone: string | null;
+  acceptsMarketing: boolean;
+  consentAt: string | null;
 }
 
 export interface Mapping {
   shopifyVariantId: string;
+  shopId?: number | null;
   aeProductId: string;
   aeSkuAttr: string | null; // např. "14:200003699;5:361386"
   logisticsServiceName: string | null; // např. "CAINIAO_STANDARD"
