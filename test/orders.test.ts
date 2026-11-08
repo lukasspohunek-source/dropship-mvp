@@ -32,6 +32,7 @@ test("bez mapování → NEEDS_MAPPING; po přidání mapování se odešle", as
   assert.equal(o.status, "PLACED");
   assert.equal(sup.placed[0]?.tryToPay, true);
   assert.equal(sup.placed[0]?.lines[0]?.aeSkuAttr, "14:200003699");
+  assert.equal(JSON.parse(repo.getOrder(id)!.supplier_lines_json!)[0].unitCost, null, "bez ceny v katalogu je snapshot prázdný");
   assert.equal(repo.shipmentsForOrder(id).length, 1);
 });
 

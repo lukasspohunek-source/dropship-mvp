@@ -36,6 +36,21 @@ export interface Config {
     syncHours: number;
   };
   compliance: { sellerCountry: string; fxToEur: Record<string, number>; retentionYears: number };
+  ads: {
+    /** Systémový uživatel Meta s oprávněním ads_read. Nikdy neukládat do DB. */
+    metaToken: string | null;
+    graphVersion: string;
+    feePct: number;
+    feeFixed: number;
+    syncHours: number;
+    analyzeDays: number;
+    analyzeDaily: boolean;
+    tiktokToken: string | null;
+    google: { developerToken: string; clientId: string; clientSecret: string; refreshToken: string; loginCustomerId: string | null; version: string } | null;
+    sklik: { token: string; moneyDivisor: number } | null;
+    /** Povolit provádění navržených akcí (pozastavit / +20 % rozpočtu) po potvrzení. Token pak potřebuje ads_management. */
+    allowWrite: boolean;
+  };
   trends: {
     /** Claude API: klíč čte SDK z ANTHROPIC_API_KEY. */
     aiEnabled: boolean;
@@ -108,6 +123,7 @@ export function loadConfig(env: Env = process.env): Config {
       stockBuffer: num("STOCK_BUFFER", 2),
       stockCap: num("STOCK_CAP", 50),
       priceAlertPct: num("PRICE_ALERT_PCT", 15),
+      shippingPerUnit: num("PRICE_SHIPPING_PER_UNIT", 0),
     },
     ae: {
       appKey: req("AE_APP_KEY"),
@@ -130,6 +146,28 @@ export function loadConfig(env: Env = process.env): Config {
     },
     catalog: {
       syncHours: num("CATALOG_SYNC_HOURS", 6),
+    },
+    ads: {
+      metaToken: env.META_ACCESS_TOKEN?.trim() || null,
+      graphVersion: opt("META_GRAPH_VERSION", "v26.0"),
+      feePct: num("ADS_FEE_PCT", 2),
+      feeFixed: num("ADS_FEE_FIXED", 0),
+      syncHours: num("ADS_SYNC_HOURS", 6),
+      analyzeDays: num("ADS_ANALYZE_DAYS", 14),
+      analyzeDaily: bool("ADS_ANALYZE_DAILY", true),
+      allowWrite: bool("ADS_ALLOW_WRITE", false),
+      tiktokToken: env.TIKTOK_ACCESS_TOKEN?.trim() || null,
+      google: env.GOOGLE_ADS_DEVELOPER_TOKEN?.trim()
+        ? {
+            developerToken: env.GOOGLE_ADS_DEVELOPER_TOKEN.trim(),
+            clientId: req("GOOGLE_ADS_CLIENT_ID"),
+            clientSecret: req("GOOGLE_ADS_CLIENT_SECRET"),
+            refreshToken: req("GOOGLE_ADS_REFRESH_TOKEN"),
+            loginCustomerId: env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.trim() || null,
+            version: opt("GOOGLE_ADS_API_VERSION", "v26"),
+          }
+        : null,
+      sklik: env.SKLIK_TOKEN?.trim() ? { token: env.SKLIK_TOKEN.trim(), moneyDivisor: num("SKLIK_MONEY_DIVISOR", 100) || 100 } : null,
     },
     trends: {
       aiEnabled: Boolean(env.ANTHROPIC_API_KEY?.trim() || env.ANTHROPIC_AUTH_TOKEN?.trim()),

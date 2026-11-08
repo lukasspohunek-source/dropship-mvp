@@ -6,6 +6,11 @@ import type { IncomingOrder, Mapping, OrderStatus, SupplierLine } from "./types.
 
 export interface OrderRow {
   id: number;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  source_name: string | null;
   shop_id: number;
   customer_id: number | null;
   total_tax: number;
@@ -70,13 +75,23 @@ export class Repo {
     try {
       this.db.exec(SCHEMA);
       // v1 → v2: přibyla tabulka trend_runs (vytvoří ji CREATE TABLE IF NOT EXISTS výše).
-      // Budoucí změny sloupců: if (v < 3) this.db.exec("ALTER TABLE ...");
+      // v2 → v3: UTM a zdroj u objednávek (nové tabulky reklam vytvoří SCHEMA).
+      if (v > 0 && v < 3)
+        for (const c of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "source_name"]) this.ensureColumn("orders", c, "TEXT");
+      // v3 → v4: skutečná částka zaplacená AliExpressu (zboží + doprava) u zásilky.
+      if (v > 0 && v < 4) for (const [c, t] of [["ae_amount", "REAL"], ["ae_currency", "TEXT"]]) this.ensureColumn("shipments", c!, t!);
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_orders_utm_campaign ON orders(utm_campaign)");
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       this.db.exec("COMMIT");
     } catch (e) {
       this.db.exec("ROLLBACK");
       throw e;
     }
+  }
+
+  private ensureColumn(table: string, column: string, type: string): void {
+    const cols = (this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 
   now_(): string {
@@ -103,8 +118,9 @@ export class Repo {
     const r = this.db
       .prepare(
         `INSERT INTO orders (shop_id, shopify_order_id, shopify_order_gid, name, currency, total_price, total_tax,
-           country_code, email, address_json, lines_json, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?)`,
+           country_code, email, address_json, lines_json, utm_source, utm_medium, utm_campaign, utm_content, source_name,
+           status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?)`,
       )
       .run(
         shopId,
@@ -118,6 +134,11 @@ export class Repo {
         o.email,
         o.address ? JSON.stringify(o.address) : null,
         JSON.stringify(o.lines),
+        o.attribution?.utmSource ?? null,
+        o.attribution?.utmMedium ?? null,
+        o.attribution?.utmCampaign ?? null,
+        o.attribution?.utmContent ?? null,
+        o.attribution?.sourceName ?? null,
         t,
         t,
       );
@@ -221,14 +242,21 @@ export class Repo {
 
   updateShipmentStatus(
     id: number,
-    s: { aeOrderStatus: string; logisticsStatus: string; trackingNumber: string | null; carrier: string | null },
+    s: {
+      aeOrderStatus: string;
+      logisticsStatus: string;
+      trackingNumber: string | null;
+      carrier: string | null;
+      aeAmount?: number | null;
+      aeCurrency?: string | null;
+    },
   ): void {
     this.db
       .prepare(
         `UPDATE shipments SET ae_order_status = ?, logistics_status = ?, tracking_number = ?, carrier = ?,
-           last_error = NULL, updated_at = ? WHERE id = ?`,
+           ae_amount = COALESCE(?, ae_amount), ae_currency = COALESCE(?, ae_currency), last_error = NULL, updated_at = ? WHERE id = ?`,
       )
-      .run(s.aeOrderStatus, s.logisticsStatus, s.trackingNumber, s.carrier, this.ts(), id);
+      .run(s.aeOrderStatus, s.logisticsStatus, s.trackingNumber, s.carrier, s.aeAmount ?? null, s.aeCurrency ?? null, this.ts(), id);
   }
 
   setShipmentError(id: number, err: string): void {
@@ -323,5 +351,6 @@ function rowToMapping(r: Record<string, string | number | null>): Mapping {
     aeSkuAttr: (r.ae_sku_attr as string | null) ?? null,
     logisticsServiceName: (r.logistics_service_name as string | null) ?? null,
     note: (r.note as string | null) ?? null,
+    lastCost: r.last_cost == null ? null : Number(r.last_cost),
   };
 }

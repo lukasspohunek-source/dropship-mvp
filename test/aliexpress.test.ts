@@ -101,6 +101,7 @@ test("getOrder vrátí status, produkty a tracking", async () => {
         logistics_status: "SELLER_SEND_GOODS",
         child_order_list: { ae_child_order_info: [{ product_id: 1005001234567890 }] },
         logistics_info_list: { ae_order_logistics_info: [{ logistics_no: "LP00123CZ", logistics_service: "CAINIAO_STANDARD" }] },
+        order_amount: { amount: "7.43", currency_code: "USD" },
       },
       rsp_code: "200",
     },
@@ -111,6 +112,7 @@ test("getOrder vrátí status, produkty a tracking", async () => {
     logisticsStatus: "SELLER_SEND_GOODS",
     productIds: ["1005001234567890"],
     tracking: [{ number: "LP00123CZ", carrier: "CAINIAO_STANDARD" }],
+    orderAmount: { amount: 7.43, currency: "USD" },
   });
 });
 

@@ -32,6 +32,16 @@ export interface OrderLine {
   sku: string | null;
   quantity: number;
   requiresShipping: boolean;
+  /** Cena za kus v měně objednávky (s DPH, po slevě na položce), pokud ji payload obsahuje. */
+  unitPrice?: number | null;
+}
+
+export interface OrderAttribution {
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmContent: string | null;
+  sourceName: string | null;
 }
 
 export interface IncomingOrder {
@@ -45,6 +55,7 @@ export interface IncomingOrder {
   address: ShippingAddress | null;
   lines: OrderLine[];
   customer: IncomingCustomer | null;
+  attribution?: OrderAttribution | null;
 }
 
 export interface IncomingCustomer {
@@ -62,6 +73,8 @@ export interface Mapping {
   aeSkuAttr: string | null; // např. "14:200003699;5:361386"
   logisticsServiceName: string | null; // např. "CAINIAO_STANDARD"
   note: string | null;
+  /** Poslední známá nákupní cena za kus v měně AE (z katalogu). */
+  lastCost?: number | null;
 }
 
 /** Řádek objednávky po namapování – ukládá se při odeslání, aby šel později spárovat tracking. */
@@ -72,6 +85,8 @@ export interface SupplierLine {
   aeProductId: string;
   aeSkuAttr: string | null;
   logisticsServiceName: string | null;
+  /** Nákupní cena za kus v měně AE v okamžiku odeslání objednávky (snapshot). */
+  unitCost?: number | null;
 }
 
 export type PlaceResult =
@@ -86,6 +101,8 @@ export interface SupplierOrderInfo {
   logisticsStatus: string;
   productIds: string[];
   tracking: { number: string; carrier: string }[];
+  /** Skutečně zaplacená částka AE objednávky (zboží + doprava), pokud ji AE vrátí. */
+  orderAmount?: { amount: number; currency: string } | null;
 }
 
 export interface Supplier {

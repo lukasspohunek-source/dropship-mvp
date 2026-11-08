@@ -342,6 +342,10 @@ export class AliExpressSupplier implements Supplier, CatalogSource {
     return {
       orderStatus: String(r.order_status ?? ""),
       logisticsStatus: String(r.logistics_status ?? ""),
+      orderAmount:
+        r.order_amount?.amount != null && Number.isFinite(Number(r.order_amount.amount))
+          ? { amount: Number(r.order_amount.amount), currency: String(r.order_amount.currency_code ?? this.cfg.payCurrency) }
+          : null,
       productIds: children.map((c) => String(c.product_id)),
       tracking: logistics
         .filter((l) => l?.logistics_no)
