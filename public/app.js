@@ -361,6 +361,7 @@ async function viewAds(root) {
       stat("Zisk před reklamou", moneyR(t.grossProfit, cur), null, `náklady ${moneyR(t.cogs, cur)} · poplatky ${moneyR(t.fees, cur)}`),
       stat("Útrata za reklamy", moneyR(t.spend, cur), null, t.unlinkedSpend ? `nepřiřazeno ${moneyR(t.unlinkedSpend, cur)}` : null),
       stat("Zisk po reklamě", moneyR(t.profitAfterAds, cur), null, t.mer ? `MER ${String(t.mer).replace(".", ",")}` : null)),
+    customersBlock(stats.customers, cur),
     costSourceNote(t.costSource),
     profitChart(stats.daily, cur),
     report ? reportBlock(report) : h("p", { class: "muted" }, "Zatím žádná analýza – spusť „Analyzovat a doporučit“. Automaticky běží jednou denně."),
@@ -378,6 +379,15 @@ async function viewAds(root) {
       h("div", { class: "row between" }, h("span", { class: "title" }, c.name), c.linked ? h("span", { class: "badge ok" }, "přiřazeno") : h("button", { class: "link", onclick: () => linkCampaign(c) }, "Přiřadit k produktu")),
       h("div", { class: "small muted" }, `útrata ${moneyR(c.spend, cur)} · CTR ${c.ctrPct ?? "–"} % · CPC ${c.cpc != null ? moneyR(c.cpc, cur) : "–"} · Meta nákupy ${c.metaPurchases} · objednávky z UTM ${c.utmOrders}`))) : h("p", { class: "muted" }, "Žádná data z Meta za období."),
   );
+}
+
+function customersBlock(c, cur) {
+  if (!c) return null;
+  return h("div", { class: "grid" },
+    stat("Noví zákazníci", c.newCustomers, null, c.ncac != null ? `získání ${moneyR(c.ncac, cur)} / zákazník` : null),
+    stat("Zisk z 1. objednávky", c.avgFirstOrderProfit != null ? moneyR(c.avgFirstOrderProfit, cur) : "–", null, "průměr, před reklamou"),
+    stat("Opakované nákupy", c.returningSharePct != null ? `${String(c.returningSharePct).replace(".", ",")} %` : "–", null, plural(c.returningOrders, "objednávka", "objednávky", "objednávek")),
+    stat("LTV 90 dní", c.ltv90Revenue != null ? moneyR(c.ltv90Revenue, cur) : "–", null, c.ltvCohortSize ? `zisk ~${moneyR(c.ltv90Profit, cur)} · ${plural(c.ltvCohortSize, "zákazník", "zákazníci", "zákazníků")}` : "málo dat"));
 }
 
 function costSourceNote(c) {

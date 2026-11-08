@@ -175,6 +175,7 @@ function baseStats(over: Partial<AdsStats> = {}): AdsStats {
   return {
     shopId: 1, currency: "CZK", from: "2026-11-01", to: "2026-11-14",
     totals: { orders: 0, revenue: 0, cogs: 0, fees: 0, refunds: 0, grossProfit: 0, spend: 0, profitAfterAds: 0, mer: null, unlinkedSpend: 0, metaPurchases: 0, costSource: { actual: 0, estimated: 0, missing: 0 } },
+    customers: { newCustomers: 0, returningOrders: 0, returningSharePct: null, ncac: null, avgFirstOrderProfit: null, ltv90Revenue: null, ltv90Profit: null, ltvCohortSize: 0 },
     products: [], campaigns: [], daily: [], warnings: [], ...over,
   };
 }
@@ -329,4 +330,39 @@ test("doprava se promítne do prodejní ceny i nákladu v Shopify", async () => 
   const r = { ...DEFAULT_PRICING_FOR_TEST, shippingPerUnit: 1.5 };
   assert.equal(unitCostInShop(5, r), 149.5);
   assert.equal(computePrice(5, r), 299); // (5+1,5)×23×2 = 299 → 300 − 1
+});
+
+test("zákazníci: noví vs. vracející se, nCAC, zisk z 1. objednávky, LTV 90 dní", () => {
+  const s = setup("2026-11-08");
+  const lamp = s.addProduct("1005006543210987", "Lampa", 5);
+  const mk = (day: string, email: string) => {
+    const id = s.addOrder(day, [{ vid: lamp.vid, qty: 1 }], 605);
+    s.repo.db.prepare("UPDATE orders SET email = ?, customer_id = NULL WHERE id = ?").run(email, id);
+  };
+  mk("2026-06-01", "stara@x.cz"); // kohorta pro LTV
+  mk("2026-07-10", "stara@x.cz"); // do 90 dní
+  mk("2026-11-02", "stara@x.cz"); // vracející se v období
+  mk("2026-11-03", "nova1@x.cz");
+  mk("2026-11-04", "nova2@x.cz");
+  mk("2026-11-05", "nova2@x.cz"); // vracející se nová zákaznice
+  s.addAccount("111", "CZK");
+  s.addStat("111", { date: "2026-11-03", adId: "a", campaignId: "c", spend: 600 });
+  const st = new AdsService(s.repo, s.shops, null, null, CFG, s.clock).stats(s.shopId, "2026-11-01", "2026-11-08");
+  const c = st.customers;
+  assert.equal(c.newCustomers, 2);
+  assert.equal(c.returningOrders, 2);
+  assert.equal(c.returningSharePct, 50);
+  assert.equal(c.ncac, 300);
+  assert.equal(c.avgFirstOrderProfit, 375, "500 − 115 − 10 poplatek");
+  assert.equal(c.ltvCohortSize, 1);
+  assert.equal(c.ltv90Revenue, 1000);
+});
+
+test("pravidlo nCAC: ztráta na zákazníkovi vs. zaplatí se opakovaným nákupem", () => {
+  const cust = (o: Partial<AdsStats["customers"]>) => ({ newCustomers: 4, returningOrders: 0, returningSharePct: 0, ncac: 400, avgFirstOrderProfit: 250, ltv90Revenue: null, ltv90Profit: null, ltvCohortSize: 0, ...o });
+  const tot = { ...baseStats().totals, spend: 1600 };
+  assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({}) })), ["ncac-loss"]);
+  assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({ ltv90Profit: 450, ltvCohortSize: 6 }) })), ["ncac-payback"]);
+  assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({ ltv90Profit: 450, ltvCohortSize: 2 }) })), ["ncac-loss"], "malá kohorta nestačí");
+  assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({ ncac: 200 }) })), []);
 });

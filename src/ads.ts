@@ -225,12 +225,30 @@ export interface AdsTotals {
   costSource: { actual: number; estimated: number; missing: number };
 }
 
+export interface CustomerStats {
+  /** Zákazníci, jejichž první objednávka v e-shopu padla do období. */
+  newCustomers: number;
+  /** Objednávky v období od zákazníků, kteří už dřív nakoupili. */
+  returningOrders: number;
+  returningSharePct: number | null;
+  /** Útrata / noví zákazníci. */
+  ncac: number | null;
+  /** Průměrný zisk před reklamou z první objednávky nových zákazníků. */
+  avgFirstOrderProfit: number | null;
+  /** Průměrná tržba bez DPH na zákazníka do 90 dní od 1. nákupu (zákazníci s 1. nákupem před ≥ 90 dny). */
+  ltv90Revenue: number | null;
+  /** Odhad zisku z LTV90 přes marži období. */
+  ltv90Profit: number | null;
+  ltvCohortSize: number;
+}
+
 export interface AdsStats {
   shopId: number;
   currency: string;
   from: string;
   to: string;
   totals: AdsTotals;
+  customers: CustomerStats;
   products: ProductStats[];
   campaigns: CampaignStats[];
   daily: DayStats[];
@@ -336,6 +354,15 @@ export function analyzeStats(s: AdsStats, t: Thresholds, fxToEur: Record<string,
     ...s.products.flatMap((p) => productFindings(p, t, minSpend, f)),
     ...s.campaigns.flatMap((c) => campaignFindings(c, t, minSpend, f)),
   ];
+  const cu = s.customers;
+  if (cu.ncac != null && cu.avgFirstOrderProfit != null && cu.newCustomers >= 3 && s.totals.spend >= minSpend && cu.ncac > cu.avgFirstOrderProfit) {
+    const paysBack = cu.ltv90Profit != null && cu.ltvCohortSize >= 5 && cu.ltv90Profit >= cu.ncac;
+    out.push(
+      paysBack
+        ? { id: "ncac-payback", severity: "info", scope: "shop", ref: { name: "Zákazníci" }, title: "Nový zákazník se zaplatí až opakovaným nákupem", detail: `Získání zákazníka ${f(cu.ncac)}, zisk z 1. objednávky ${f(cu.avgFirstOrderProfit)}; za 90 dní přinese ~${f(cu.ltv90Profit!)} (${cu.ltvCohortSize} zákazníků).`, action: "Reklama se vyplácí až na opakovaných nákupech – hlídej cash flow a podporuj návrat (e-mail po doručení, sleva na další nákup se souhlasem).", impact: 0 }
+        : { id: "ncac-loss", severity: "warning", scope: "shop", ref: { name: "Zákazníci" }, title: "Nový zákazník stojí víc, než přinese", detail: `Získání zákazníka ${f(cu.ncac)}, zisk z 1. objednávky ${f(cu.avgFirstOrderProfit)}${cu.ltv90Profit == null ? " (na LTV zatím málo dat)" : `, za 90 dní ~${f(cu.ltv90Profit)}`}.`, action: "Zvyš hodnotu objednávky (balíčky, doprava zdarma od částky) nebo sniž cenu za zákazníka (lepší kreativa, užší cílení).", impact: (cu.ncac - cu.avgFirstOrderProfit) * cu.newCustomers },
+    );
+  }
   const tot = s.totals;
   if (tot.spend > 0 && (tot.unlinkedSpend / tot.spend) * 100 > t.unlinkedSharePct)
     out.push({ id: "unlinked", severity: "info", scope: "shop", ref: { name: "E-shop" }, title: "Část útraty není přiřazená k produktům", detail: `${f(tot.unlinkedSpend)} z ${f(tot.spend)} (${Math.round((tot.unlinkedSpend / tot.spend) * 100)} %).`, action: "Přiřaď kampaně k produktům (Reklamy → kampaň → Přiřadit) nebo dej do názvu kampaně ID produktu z AliExpressu.", impact: 0 });
@@ -586,7 +613,7 @@ export class AdsService {
     const days = new Map<string, DayStats>();
     for (let d = from; d <= to; d = addDaysIso(d, 1)) days.set(d, { date: d, revenue: 0, grossProfit: 0, spend: 0, profitAfterAds: 0 });
 
-    const { utm, costSource } = this.collectOrders(shop, from, to, new Map(variants.map((v) => [v.shopify_variant_id, v])), prod, days);
+    const { utm, costSource, grossByOrder } = this.collectOrders(shop, from, to, new Map(variants.map((v) => [v.shopify_variant_id, v])), prod, days);
     const { campaigns, unlinked } = this.collectAds(shop, from, to, products, prod, days, utm, warnings);
 
     const productList: ProductStats[] = [...P.values()]
@@ -620,6 +647,7 @@ export class AdsService {
         metaPurchases: campaigns.reduce((a, c) => a + c.metaPurchases, 0),
         costSource,
       },
+      customers: this.customerStats(shopId, from, to, spend, gross, revenue, grossByOrder),
       products: productList,
       campaigns,
       daily: [...days.values()].map((d) => ({ date: d.date, revenue: r2(d.revenue), grossProfit: r2(d.grossProfit), spend: r2(d.spend), profitAfterAds: r2(d.grossProfit - d.spend) })),
@@ -635,8 +663,9 @@ export class AdsService {
     variantMap: Map<string, VariantAgg>,
     prod: (pid: number | null) => ProdAcc,
     days: Map<string, DayStats>,
-  ): { utm: Map<string, { orders: number; revenue: number }>; costSource: AdsTotals["costSource"] } {
+  ): { utm: Map<string, { orders: number; revenue: number }>; costSource: AdsTotals["costSource"]; grossByOrder: Map<number, number> } {
     const costSource = { actual: 0, estimated: 0, missing: 0 };
+    const grossByOrder = new Map<number, number>();
     const orders = this.repo.db
       .prepare(
         `SELECT id, total_price, total_tax, lines_json, supplier_lines_json, utm_campaign, substr(created_at, 1, 10) AS day
@@ -698,6 +727,7 @@ export class AdsService {
         p._orders.add(o.id);
         orderGross += lineNet - cogs - fees * share - refund * share;
       });
+      grossByOrder.set(o.id, orderGross);
       const day = days.get(o.day);
       if (day) {
         day.revenue += net;
@@ -711,7 +741,57 @@ export class AdsService {
         utm.set(k, u);
       }
     }
-    return { utm, costSource };
+    return { utm, costSource, grossByOrder };
+  }
+
+  /** Noví vs. vracející se zákazníci, nCAC a LTV 90 dní (zákazník = CRM, jinak e-mail). */
+  private customerStats(shopId: number, from: string, to: string, spend: number, gross: number, revenue: number, grossByOrder: Map<number, number>): CustomerStats {
+    const rows = this.repo.db
+      .prepare(
+        `SELECT id, COALESCE(CAST(customer_id AS TEXT), lower(email)) AS who, created_at, total_price - total_tax AS net
+         FROM orders WHERE shop_id = ? AND status NOT IN ('CANCELLED','IGNORED') ORDER BY created_at, id`,
+      )
+      .all(shopId) as { id: number; who: string | null; created_at: string; net: number }[];
+    const first = new Map<string, string>();
+    for (const r of rows) if (r.who && !first.has(r.who)) first.set(r.who, r.created_at);
+    let newCustomers = 0;
+    let returning = 0;
+    let inPeriod = 0;
+    const firstProfits: number[] = [];
+    const seenFirst = new Set<string>();
+    for (const r of rows) {
+      const day = r.created_at.slice(0, 10);
+      if (day < from || day > to || !r.who) continue;
+      inPeriod++;
+      const f = first.get(r.who)!;
+      if (f === r.created_at && !seenFirst.has(r.who)) {
+        seenFirst.add(r.who);
+        newCustomers++;
+        const g = grossByOrder.get(r.id);
+        if (g != null) firstProfits.push(g);
+      } else returning++;
+    }
+    // LTV 90: kohorty s 1. nákupem nejpozději 90 dní před koncem období.
+    const cutoff = addDaysIso(to, -90);
+    const ltv = new Map<string, number>();
+    for (const r of rows) {
+      if (!r.who) continue;
+      const f = first.get(r.who)!;
+      if (f.slice(0, 10) > cutoff) continue;
+      if (r.created_at.slice(0, 10) <= addDaysIso(f.slice(0, 10), 90)) ltv.set(r.who, (ltv.get(r.who) ?? 0) + Number(r.net));
+    }
+    const ltvRevenue = ltv.size ? [...ltv.values()].reduce((a, b) => a + b, 0) / ltv.size : null;
+    const margin = revenue > 0 ? gross / revenue : null;
+    return {
+      newCustomers,
+      returningOrders: returning,
+      returningSharePct: pct1(returning, inPeriod),
+      ncac: newCustomers > 0 && spend > 0 ? r2(spend / newCustomers) : null,
+      avgFirstOrderProfit: firstProfits.length ? r2(firstProfits.reduce((a, b) => a + b, 0) / firstProfits.length) : null,
+      ltv90Revenue: ltvRevenue == null ? null : r2(ltvRevenue),
+      ltv90Profit: ltvRevenue != null && margin != null ? r2(ltvRevenue * margin) : null,
+      ltvCohortSize: ltv.size,
+    };
   }
 
   /**
