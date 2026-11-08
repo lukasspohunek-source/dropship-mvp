@@ -1,0 +1,219 @@
+/* ============================================================================
+   Kopie 1:1 z lukasspohunek-source/Pokovo-konfiguratory packages/core/css/pokovo-tokens.css (commit 60352cd).
+   Neupravovat zde – při změně palety zkopírovat znovu.
+   POKOVO CORE — design tokeny (fáze 1, 3. 11. 2026)
+   ----------------------------------------------------------------------------
+   JEDNO téma: světlý zelený design FabricApp (schválená reference
+   FabricApp docs/ui-redesign/approved-reference/reference-tokens.json
+   a sdílená paleta artifacts/fabrika-attendance/constants/theme.ts).
+   Hodnoty se sem PŘEPISUJÍ jen z těchto dvou zdrojů; žádné nové odstíny.
+   Shodu hlídá packages/core/test/tokens.test.mjs.
+
+   Proč jedno téma: zákazník má vidět jednu značku. Tmavé „dílenské“ téma,
+   skicák a přepínač témat se ruší (rozhodnutí majitele 2. 11. 2026:
+   „design světlý fabricapp jako je dashboard nový, zelený“).
+   Místo tmavého režimu je tu prefers-contrast: more — zesílené „sluneční“
+   barvy z Expo aplikace (čitelnost venku na telefonu).
+
+   Pravidla (z FabricApp DESIGN_RULES.md, převedená na konfigurátory):
+     1. Jediné hlavní CTA v kontextu = tmavě zelená (--pk-accent).
+     2. Limetka (--pk-highlight) je výběr a značka, NIKDY sama nenese stav
+        (na bílé má kontrast 1,3 : 1) — vybraná karta = rám + ✓ + limetka.
+     3. Karty radius 16, tlačítka a pole radius 9, jemný stín 0 8px 32px.
+     4. Písmo Inter (vlastní hosting), čísla a kóty JetBrains Mono.
+     5. Text min. 14 px, pole 16 px (iOS jinak při fokusu zoomuje),
+        dotykový cíl min. 44 px.
+     6. Barva v JS jen přes PokovoShell.token('--pk-…'), nikdy natvrdo.
+
+   Jména proměnných --pk-* zůstávají kvůli zpětné kompatibilitě editorů.
+   ============================================================================ */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/inter-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/inter-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root,
+[data-pk-theme] {
+  color-scheme: light;
+
+  /* --- rozměrový systém: 4/8/12/16/20/24/32 (reference spacing) --- */
+  --pk-space-1: 4px;
+  --pk-space-2: 8px;
+  --pk-space-3: 12px;
+  --pk-space-4: 16px;
+  --pk-space-5: 24px;
+  --pk-space-6: 32px;
+  --pk-space-7: 48px;
+
+  /* --- tvar (reference shape) --- */
+  --pk-radius-sm: 6px;       /* odznak, malý štítek */
+  --pk-radius: 9px;          /* tlačítko, pole */
+  --pk-radius-lg: 16px;      /* karta, panel, dialog */
+  --pk-radius-pill: 999px;
+
+  --pk-border: 1px;
+  --pk-border-strong: 2px;
+
+  /* --- typografie --- */
+  --pk-font-display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --pk-font-body: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --pk-font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* Nejmenší čitelný stupeň 12 px (jen štítky), text 14 px, tělo/pole 16 px. */
+  --pk-fs-micro: 12px;
+  --pk-fs-xs: 13px;
+  --pk-fs-sm: 14px;
+  --pk-fs-md: 16px;
+  --pk-fs-lg: 18px;          /* nadpis karty (reference ~18 px) */
+  --pk-fs-xl: 24px;
+  --pk-fs-2xl: 30px;         /* nadpis stránky (reference ~30 px) */
+
+  --pk-tracking-eyebrow: 0.04em;
+  --pk-tracking-display: -0.01em;
+
+  --pk-tap: 44px;            /* minimální dotykový cíl */
+
+  /* --- pohyb --- */
+  --pk-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --pk-dur-fast: 120ms;
+  --pk-dur: 200ms;
+  --pk-dur-slow: 340ms;
+
+  /* --- vrstvy --- */
+  --pk-z-canvas: 1;
+  --pk-z-panel: 10;
+  --pk-z-sticky: 20;
+  --pk-z-overlay: 100;
+  --pk-z-toast: 200;
+
+  /* --- plochy (reference color) --- */
+  --pk-bg:            #f6f7f9;
+  --pk-bg-inset:      #f3f5f6;
+  --pk-surface:       #ffffff;
+  --pk-surface-2:     #f3f5f6;
+  --pk-surface-hover: #edf1e9;   /* palette.pressed */
+
+  --pk-line:          #e8ecee;
+  --pk-line-strong:   #dfe5e6;   /* rámeček tlačítka a pole */
+
+  /* --- text --- */
+  --pk-ink:           #202c32;
+  --pk-ink-2:         #5b6970;   /* sekundární (5,7 : 1) */
+  --pk-ink-3:         #697170;   /* vypnutý (≥ 4,5 : 1) */
+  --pk-ink-inverse:   #ffffff;
+  --pk-link:          #42582d;
+
+  /* --- akce: jediné hlavní CTA je tmavě zelené --- */
+  --pk-accent:        #223a34;
+  --pk-accent-hover:  #314d43;
+  --pk-accent-ink:    #ffffff;
+  --pk-accent-soft:   #eef5e4;   /* limeSoft — jemný podklad vybraného */
+
+  /* --- značka a výběr: limetka (nikdy sama nenese stav) --- */
+  --pk-highlight:        #c9ed8a;
+  --pk-highlight-ink:    #2c4024;
+  --pk-highlight-border: #d5e8ad;
+
+  --pk-focus:         #739a39;
+
+  /* --- stavy --- */
+  --pk-ok:            #3d5924;
+  --pk-ok-soft:       #eef5e8;
+  --pk-warn:          #6a4c24;
+  --pk-warn-soft:     #fcf1e5;
+  --pk-err:           #87372c;
+  --pk-err-soft:      #faeeec;
+  --pk-danger:        #a94638;
+  --pk-info:          #3b5276;
+  --pk-info-soft:     #edf2ff;
+
+  /* --- pastelové plochy ikon a info karet (nenesou stav ani akci) --- */
+  --pk-pastel-lilac:  #ede9fa;
+  --pk-pastel-blue:   #e9f1fc;
+  --pk-pastel-peach:  #fbefe5;
+  --pk-pastel-mint:   #edf5e9;
+
+  /* --- stín (reference shape.shadow; překryv o stupeň výraznější) --- */
+  --pk-shadow-1: 0 8px 32px #22332c06;
+  --pk-shadow-2: 0 18px 48px #22332c1f;
+
+  /* --- plátno 2D / 3D: světlé, kov proti bílé, kóty zeleně --- */
+  --pk-canvas-bg:      #ffffff;
+  --pk-canvas-grid:    #f3f5f6;
+  --pk-canvas-grid-10: #dfe5e6;
+  --pk-canvas-line:    #202c32;
+  --pk-canvas-fill:    #dfe5e6;
+  --pk-canvas-fill-2:  #e8ecee;
+  --pk-canvas-dim:     #42582d;
+  --pk-canvas-dim-ink: #2c4024;
+  --pk-canvas-hi:      #739a39;
+  --pk-canvas-ghost:   rgba(32, 44, 50, 0.18);
+  --pk-canvas-ground:  #f3f5f6;
+  --pk-canvas-sky:     #f6f7f9;
+  --pk-3d-metal:       #8e9aa6;  /* tmavší kov proti bílému plátnu */
+  --pk-3d-env:         #e9f1fc;  /* prostředí pro odrazy kovu */
+  --pk-3d-key: 1.25;
+  --pk-3d-amb: 0.62;
+}
+
+/* Milimetrový papír jako pozadí plátna — jen kde ho editor výslovně chce
+   (skicák). Dřív to bylo celé téma „sketch“. */
+.pk-canvas--mm {
+  background-image:
+    linear-gradient(var(--pk-canvas-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--pk-canvas-grid) 1px, transparent 1px),
+    linear-gradient(var(--pk-canvas-grid-10) 1px, transparent 1px),
+    linear-gradient(90deg, var(--pk-canvas-grid-10) 1px, transparent 1px);
+  background-size: 8px 8px, 8px 8px, 80px 80px, 80px 80px;
+  background-position: -1px -1px;
+}
+
+/* Venku na slunci / zvýšený kontrast v systému: tmavší sekundární text a linky
+   (jen hodnoty z Expo palety: slate #49545a = 7,3 : 1, slateLight #697170). */
+@media (prefers-contrast: more) {
+  :root,
+  [data-pk-theme] {
+    --pk-ink-2: #49545a;
+    --pk-ink-3: #5b6970;
+    --pk-line: #dfe5e6;
+    --pk-line-strong: #697170;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  [data-pk-theme] {
+    --pk-dur-fast: 0ms;
+    --pk-dur: 0ms;
+    --pk-dur-slow: 0ms;
+  }
+}
