@@ -138,7 +138,7 @@ th { color: var(--pk-ink-2); font-weight: 600; }
 #toast.show { opacity: 1; }
 #toast.err { background: var(--pk-err); }
 
-pre { white-space: pre-wrap; font-size: var(--pk-fs-sm); background: var(--pk-bg-inset); padding: var(--pk-space-3); border-radius: var(--pk-radius); overflow-x: auto; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--pk-fs-sm); background: var(--pk-bg-inset); padding: var(--pk-space-3); border-radius: var(--pk-radius); overflow-x: auto; }
 details summary { cursor: pointer; color: var(--pk-ink-2); margin: var(--pk-space-3) 0; min-height: var(--pk-tap); display: flex; align-items: center; }
 .card a { color: var(--pk-link); align-self: center; }
 

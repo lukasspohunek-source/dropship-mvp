@@ -113,6 +113,20 @@ Ověř na první reálné objednávce, že `order_amount` z AE obsahuje i doprav
 **Omezení**: útrata v jiné měně
 se přepočítá kurzy `OSS_FX_TO_EUR`; data z Meta se načítají za posledních 28 dní (Meta dopočítává konverze zpětně).
 
+## Další reklamní kanály
+
+| Kanál | Jak | Proměnné |
+|---|---|---|
+| Meta (Facebook/Instagram) | Marketing API (Graph v26.0) | `META_ACCESS_TOKEN` |
+| TikTok | Marketing API v1.3, report po dnech (po 30 dnech) | `TIKTOK_ACCESS_TOKEN` |
+| Google Ads | REST `googleAds:searchStream` (v26), OAuth refresh token | `GOOGLE_ADS_DEVELOPER_TOKEN`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_REFRESH_TOKEN`, volitelně `_LOGIN_CUSTOMER_ID` |
+| Sklik | API Drak JSON v5, report kampaní po dnech | `SKLIK_TOKEN`, `SKLIK_MONEY_DIVISOR` (100 = haléře → Kč, **ověř** na prvním reportu) |
+| Heureka a cokoli dalšího | import CSV (Nastavení → Reklamy) | – |
+
+Účet přidáš v Nastavení → Reklamy (platforma + ID). Útrata všech kanálů se sčítá do zisku po reklamě; provádění
+akcí (pauza, rozpočet) zatím jen pro Meta. Proti reálným API TikToku, Googlu a Skliku neověřeno – parsování je
+podle dokumentace, první synchronizaci zkontroluj.
+
 ## AI trendy
 
 Produkty → AI trendy → zadej témata (např. „lampa, organizér“). Běh trvá 1–3 minuty a stojí kredity API.

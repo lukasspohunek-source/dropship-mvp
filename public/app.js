@@ -351,12 +351,11 @@ async function viewAds(root) {
     h("h1", {}, "Reklamy a zisk"),
     h("label", {}, "E-shop", sel),
     h("div", { class: "chips" }, [7, 14, 30].map((d) => h("button", { class: d === days ? "on" : "", onclick: () => ((state.adsDays = d), rerender()) }, `${d} dní`))),
-    !st.meta ? h("div", { class: "alert" }, "Meta není napojená (chybí META_ACCESS_TOKEN) – zisk z objednávek se počítá, útrata je 0.") : null,
-    st.meta && !hasAcc ? h("div", { class: "alert" }, "E-shop nemá reklamní účet. ", h("button", { class: "link", onclick: () => go("settings", "ads") }, "Přidat účet")) : null,
+    !hasAcc ? h("div", { class: "alert" }, "E-shop nemá reklamní účet – zisk z objednávek se počítá, útrata je 0. ", h("button", { class: "link", onclick: () => go("settings", "ads") }, "Přidat účet")) : null,
     stats.warnings.map((w) => h("div", { class: "alert" }, w)),
     h("div", { class: "row" },
       h("button", { class: "primary", onclick: () => act(() => api("/ads/analyze", { method: "POST", body: { shopId, days } }), "Analýza hotová") }, "Analyzovat a doporučit"),
-      st.meta ? h("button", { onclick: () => act(() => api("/ads/sync", { method: "POST" }), null, (r) => (toast(`Načteno ${r.rows} řádků z ${r.accounts} účtů${r.errors ? `, chyb ${r.errors}` : ""}`), rerender())) }, "Načíst z Meta") : null),
+      st.accounts.some((a) => !["heureka", "csv"].includes(a.platform)) ? h("button", { onclick: () => act(() => api("/ads/sync", { method: "POST" }), null, (r) => (toast(`Načteno ${plural(r.rows, "řádek", "řádky", "řádků")} z ${plural(r.accounts, "účtu", "účtů", "účtů")}${r.errors ? `, chyb ${r.errors}` : ""}`), rerender())) }, "Načíst útratu") : null),
     h("div", { class: "grid" },
       stat("Tržby bez DPH", moneyR(t.revenue, cur), null, plural(t.orders, "objednávka", "objednávky", "objednávek")),
       stat("Zisk před reklamou", moneyR(t.grossProfit, cur), null, `náklady ${moneyR(t.cogs, cur)} · poplatky ${moneyR(t.fees, cur)}`),
@@ -377,7 +376,7 @@ async function viewAds(root) {
     h("p", { class: "small muted" }, `Částky v ${cur} bez DPH. „min.“ = ROAS, pod kterým produkt prodělává.`),
     h("h2", {}, "Kampaně"),
     stats.campaigns.length ? stats.campaigns.map((c) => h("div", { class: "card" },
-      h("div", { class: "row between" }, h("span", { class: "title" }, c.name), c.linked ? h("span", { class: "badge ok" }, "přiřazeno") : h("button", { class: "link", onclick: () => linkCampaign(c) }, "Přiřadit k produktu")),
+      h("div", { class: "row between" }, h("span", {}, h("span", { class: "badge" }, (st.labels || {})[c.platform] || c.platform), " ", h("span", { class: "title" }, c.name)), c.linked ? h("span", { class: "badge ok" }, "přiřazeno") : h("button", { class: "link", onclick: () => linkCampaign(c) }, "Přiřadit k produktu")),
       h("div", { class: "small muted" }, `útrata ${moneyR(c.spend, cur)} · CTR ${c.ctrPct ?? "–"} % · CPC ${c.cpc != null ? moneyR(c.cpc, cur) : "–"} · Meta nákupy ${c.metaPurchases} · objednávky z UTM ${c.utmOrders}`))) : h("p", { class: "muted" }, "Žádná data z Meta za období."),
   );
 }
@@ -770,15 +769,20 @@ const UTM_TEMPLATE = "utm_source=facebook&utm_medium=paid&utm_campaign={{campaig
 async function setAds(root) {
   const [st, links] = await Promise.all([api("/ads/status"), api("/ads/links")]);
   put(root,
-    !st.meta ? h("div", { class: "alert" }, "Chybí META_ACCESS_TOKEN v .env na serveru (token systémového uživatele s oprávněním ads_read).") : null,
-    h("h3", {}, "Reklamní účty Meta"),
+    h("h3", {}, "Reklamní účty"),
+    h("p", { class: "small muted" }, `Napojené přes API: ${st.platforms.filter((p) => !["heureka", "csv"].includes(p)).map((p) => st.labels[p]).join(", ") || "žádná (doplň tokeny v .env)"}. Heureka a ostatní: import CSV.`),
     st.accounts.map((a) => h("div", { class: "card row between" },
-      h("span", {}, h("span", { class: "title" }, a.name || `act_${a.account_id}`), h("br"), h("span", { class: `small ${a.last_error ? "lvl-error" : "muted"}` }, `${shopName(a.shop_id)} · ${a.currency} · ${a.last_error ? a.last_error : `načteno ${fmtDate(a.last_synced_at)}`}`)),
-      h("button", { class: "link", onclick: () => confirm("Odebrat účet? Stažená data zůstanou.") && act(() => api(`/ads/accounts/${a.id}`, { method: "DELETE" }), "Odebráno") }, "odebrat"))),
-    st.meta ? form([
+      h("span", {}, h("span", { class: "badge" }, st.labels[a.platform] || a.platform), " ", h("span", { class: "title" }, a.name || a.account_id), h("br"),
+        h("span", { class: `small ${a.last_error ? "lvl-error" : "muted"}` }, `${shopName(a.shop_id)} · ${a.currency} · ${a.last_error ? a.last_error : a.last_synced_at ? `data z ${fmtDate(a.last_synced_at)}` : "zatím bez dat"}`)),
+      h("span", { class: "row" },
+        ["heureka", "csv"].includes(a.platform) ? h("button", { onclick: () => importCsvDialog(a) }, "Importovat CSV") : null,
+        h("button", { class: "link", onclick: () => confirm("Odebrat účet? Stažená data zůstanou.") && act(() => api(`/ads/accounts/${a.id}`, { method: "DELETE" }), "Odebráno") }, "odebrat")))),
+    form([
+      { name: "platform", label: "Platforma", type: "select", options: st.platforms.map((p) => [p, st.labels[p] || p]) },
       { name: "shopId", label: "E-shop", type: "select", options: shopOptions() },
-      { name: "accountId", label: "ID reklamního účtu", required: true, placeholder: "act_1234567890", hint: "Ads Manager → přepínač účtu → číslo účtu" },
-    ], "Přidat účet", (v) => act(() => api("/ads/accounts", { method: "POST", body: { shopId: Number(v.shopId), accountId: v.accountId } }), "Účet přidán")) : null,
+      { name: "accountId", label: "ID účtu", required: true, placeholder: "act_123… / 123-456-7890 / heureka-cz", hint: "Meta: číslo účtu v Ads Manageru · Google: číslo zákazníka · TikTok: advertiser ID · Sklik: userId nebo self · Heureka/CSV: libovolný krátký název" },
+      { name: "currency", label: "Měna (jen u CSV, jinak se načte z účtu)", placeholder: "CZK" },
+    ], "Přidat účet", (v) => act(() => api("/ads/accounts", { method: "POST", body: { platform: v.platform, shopId: Number(v.shopId), accountId: v.accountId, currency: v.currency || undefined } }), "Účet přidán")),
     h("h3", {}, "Měření objednávek z reklam (UTM)"),
     h("p", { class: "small muted" }, "V Meta Ads Manageru vlož u reklam do pole „Parametry URL“ tento text. Pak se objednávky spárují s kampaní i bez Pixelu:"),
     h("pre", {}, UTM_TEMPLATE),
@@ -786,6 +790,18 @@ async function setAds(root) {
     h("h3", {}, "Přiřazení reklam k produktům"),
     h("p", { class: "small muted" }, "Automaticky: když název kampaně, sady nebo reklamy obsahuje ID produktu z AliExpressu. Ručně: v Produkty → Reklamy → kampaň → Přiřadit."),
     links.length ? links.map((l) => h("div", { class: "card row between small" }, `${l.level} ${l.meta_id} → ${l.product_title}`, h("button", { class: "link", onclick: () => act(() => api(`/ads/links/${l.id}`, { method: "DELETE" }), "Odebráno") }, "odebrat"))) : h("p", { class: "muted small" }, "Žádná ruční přiřazení."),
+  );
+}
+
+function importCsvDialog(a) {
+  const area = h("textarea", { placeholder: "datum;kampaň;náklady;prokliky;zobrazení;objednávky;tržby\n2026-11-01;Lampy;123,50;40;1200;2;998" });
+  const file = h("input", { type: "file", accept: ".csv,text/csv,text/plain", onchange: async (e) => { const f = e.target.files[0]; if (f) area.value = await f.text(); } });
+  modal(
+    h("h2", {}, `Import CSV – ${a.name || a.account_id}`),
+    h("p", { class: "small muted" }, "Povinné sloupce: datum, kampaň, náklady. Volitelné: prokliky, zobrazení, objednávky/konverze, tržby/hodnota. Stejné dny a kampaně se přepíšou. Max. 1 MB."),
+    h("label", {}, "Soubor", file),
+    h("label", {}, "nebo vlož text", area),
+    h("button", { class: "primary", onclick: () => act(() => api("/ads/import", { method: "POST", body: { accountId: a.id, csv: area.value } }), null, (r) => (toast(`Načteno ${plural(r.rows, "řádek", "řádky", "řádků")} (${fmtDay(r.from)} – ${fmtDay(r.to)})`), closeModal(), rerender())) }, "Importovat"),
   );
 }
 

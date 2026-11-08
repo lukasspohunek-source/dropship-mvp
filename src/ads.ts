@@ -8,6 +8,7 @@ import { idParam, oneOf, optDate } from "./http.js";
 import type { Shop, ShopService } from "./shops.js";
 import { unitCostInShop } from "./catalog.js";
 import type { OrderLine, SupplierLine } from "./types.js";
+import { normGoogleId, parseAdsCsv } from "./ads-sources.js";
 
 /**
  * Reklamy (Meta): útrata z Marketing API (jen čtení) + skutečný zisk z objednávek
@@ -522,6 +523,7 @@ export class ClaudeAdsAdvisor implements AdsAdvisor {
 interface AccountRow {
   id: number;
   shop_id: number;
+  platform: string;
   account_id: string;
   name: string | null;
   currency: string;
@@ -549,28 +551,71 @@ interface VariantAgg {
 type ProdAcc = ProductStats & { _orders: Set<number> };
 type CampAcc = CampaignStats & { _prod: Set<number>; _l3: [number, number]; _p7: [number, number] };
 
+const UPSERT_STAT = `INSERT INTO ad_stats (platform, account_id, date, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name,
+     spend, impressions, clicks, purchases, purchase_value, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(platform, ad_id, date) DO UPDATE SET ad_name = excluded.ad_name, adset_id = excluded.adset_id,
+     adset_name = excluded.adset_name, campaign_id = excluded.campaign_id, campaign_name = excluded.campaign_name,
+     spend = excluded.spend, impressions = excluded.impressions, clicks = excluded.clicks,
+     purchases = excluded.purchases, purchase_value = excluded.purchase_value, updated_at = excluded.updated_at`;
+
 const LEVELS = ["campaign", "adset", "ad"] as const;
+/** Platformy s API; "heureka" a "csv" se plní importem CSV. */
+export const PLATFORMS = ["meta", "tiktok", "google", "sklik", "heureka", "csv"] as const;
+export type Platform = (typeof PLATFORMS)[number];
+const IMPORT_ONLY: readonly string[] = ["heureka", "csv"];
+
+export const PLATFORM_LABEL: Record<Platform, string> = {
+  meta: "Meta (Facebook/Instagram)", tiktok: "TikTok", google: "Google Ads", sklik: "Sklik (Seznam)", heureka: "Heureka (CSV)", csv: "Jiné (CSV)",
+};
+
+function normId(platform: Platform, id: string): string {
+  const t = String(id).trim();
+  if (platform === "meta") return normAccountId(t);
+  if (platform === "google") return normGoogleId(t);
+  return t;
+}
+
+function validId(platform: Platform, id: string): boolean {
+  if (platform === "meta" || platform === "tiktok") return /^\d{5,25}$/.test(id);
+  if (platform === "google") return /^\d{10}$/.test(id);
+  if (platform === "sklik") return id === "self" || /^\d{1,15}$/.test(id);
+  return /^[a-z0-9_-]{1,40}$/i.test(id);
+}
+
+const slug = (s: string) =>
+  s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "kampan";
 
 export class AdsService {
   private syncing = false;
+  private readonly sources: Record<string, AdsSource>;
 
   constructor(
     private readonly repo: Repo,
     private readonly shops: ShopService,
-    private readonly source: AdsSource | null,
+    source: AdsSource | Record<string, AdsSource> | null,
     private readonly advisor: AdsAdvisor | null,
     private readonly cfg: AdsConfig,
     private readonly now: () => Date = () => new Date(),
     /** Zápis do platforem – jen když ADS_ALLOW_WRITE=true. Klíč = platforma. */
     private readonly writers: Record<string, AdsWriter> = {},
-  ) {}
+  ) {
+    this.sources = source == null ? {} : "insights" in source ? { meta: source as AdsSource } : (source as Record<string, AdsSource>);
+  }
 
   private today() {
     return this.now().toISOString().slice(0, 10);
   }
 
   status() {
-    return { meta: this.source != null, ai: this.advisor != null, write: Object.keys(this.writers), accounts: this.listAccounts() };
+    return {
+      meta: "meta" in this.sources,
+      platforms: [...Object.keys(this.sources), ...IMPORT_ONLY],
+      labels: PLATFORM_LABEL,
+      ai: this.advisor != null,
+      write: Object.keys(this.writers),
+      accounts: this.listAccounts(),
+    };
   }
 
   // ---- provedení návrhu (po potvrzení) ----
@@ -610,18 +655,59 @@ export class AdsService {
     return this.repo.db.prepare("SELECT * FROM ad_accounts ORDER BY id").all() as unknown as AccountRow[];
   }
 
-  async addAccount(shopId: number, accountId: string): Promise<AccountRow> {
-    if (!this.source) throw new ConflictError("Meta není nastavená – chybí META_ACCESS_TOKEN");
-    this.shops.get(shopId);
-    const id = normAccountId(accountId);
-    if (!/^\d{5,25}$/.test(id)) throw new ValidationError("ID reklamního účtu musí být číslo (act_123… nebo 123…)");
-    if (this.repo.db.prepare("SELECT 1 FROM ad_accounts WHERE account_id = ?").get(id)) throw new ConflictError("Účet už je přidaný");
-    const acc = await this.source.account(id);
+  async addAccount(shopId: number, accountId: string, platformRaw: string = "meta", currencyRaw?: string): Promise<AccountRow> {
+    const platform = oneOf(platformRaw, PLATFORMS, "platform");
+    const shop = this.shops.get(shopId);
+    const id = normId(platform, accountId);
+    const hint: Record<Platform, string> = {
+      meta: "číslo účtu (act_123… nebo 123…)", tiktok: "číslo advertiser ID", google: "10místné číslo zákazníka (123-456-7890)",
+      sklik: 'číslo userId spravovaného účtu nebo "self"', heureka: "krátký název (písmena, číslice, - a _)", csv: "krátký název (písmena, číslice, - a _)",
+    };
+    if (!validId(platform, id)) throw new ValidationError(`Neplatné ID účtu pro ${PLATFORM_LABEL[platform]} – čekám ${hint[platform]}`);
+    if (this.repo.db.prepare("SELECT 1 FROM ad_accounts WHERE platform = ? AND account_id = ?").get(platform, id)) throw new ConflictError("Účet už je přidaný");
+    let name: string | null = null;
+    let currency: string;
+    if (IMPORT_ONLY.includes(platform)) {
+      currency = String(currencyRaw ?? shop.currency).toUpperCase();
+      if (!/^[A-Z]{3}$/.test(currency)) throw new ValidationError("currency musí být kód ISO 4217");
+      name = platform === "heureka" ? "Heureka" : id;
+    } else {
+      const src = this.sources[platform];
+      const env: Record<string, string> = { meta: "META_ACCESS_TOKEN", tiktok: "TIKTOK_ACCESS_TOKEN", google: "GOOGLE_ADS_*", sklik: "SKLIK_TOKEN" };
+      if (!src) throw new ConflictError(`${PLATFORM_LABEL[platform]} není nastavená – chybí ${env[platform]} v .env`);
+      const acc = await src.account(id);
+      name = acc.name;
+      currency = acc.currency;
+    }
     const r = this.repo.db
-      .prepare("INSERT INTO ad_accounts (shop_id, platform, account_id, name, currency, created_at) VALUES (?, 'meta', ?, ?, ?, ?)")
-      .run(shopId, id, acc.name, acc.currency, this.now().toISOString());
-    this.repo.log(null, "info", `Přidán reklamní účet Meta ${id} (${acc.name ?? "bez názvu"}, ${acc.currency})`);
+      .prepare("INSERT INTO ad_accounts (shop_id, platform, account_id, name, currency, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(shopId, platform, id, name, currency, this.now().toISOString());
+    this.repo.log(null, "info", `Přidán reklamní účet ${PLATFORM_LABEL[platform]} ${id} (${name ?? "bez názvu"}, ${currency})`);
     return this.repo.db.prepare("SELECT * FROM ad_accounts WHERE id = ?").get(Number(r.lastInsertRowid)) as unknown as AccountRow;
+  }
+
+  /** Import útraty z CSV (Heureka, cokoli bez API). Přepíše stejné dny a kampaně. */
+  importCsv(accountDbId: number, text: string): { rows: number; from: string | null; to: string | null } {
+    const a = this.repo.db.prepare("SELECT * FROM ad_accounts WHERE id = ?").get(accountDbId) as AccountRow | undefined;
+    if (!a) throw new NotFoundError("Účet neexistuje");
+    const rows = parseAdsCsv(String(text ?? ""));
+    const t = this.now().toISOString();
+    const up = this.repo.db.prepare(UPSERT_STAT);
+    this.repo.db.exec("BEGIN");
+    try {
+      for (const r of rows) {
+        const cid = `${a.platform}:${slug(r.campaign)}`;
+        up.run(a.platform, a.account_id, r.date, cid, null, null, null, cid, r.campaign, r.spend, r.impressions, r.clicks, r.conversions, r.value, t);
+      }
+      this.repo.db.prepare("UPDATE ad_accounts SET last_synced_at = ?, last_error = NULL WHERE id = ?").run(t, a.id);
+      this.repo.db.exec("COMMIT");
+    } catch (e) {
+      this.repo.db.exec("ROLLBACK");
+      throw e;
+    }
+    const dates = rows.map((r) => r.date).sort();
+    this.repo.log(null, "info", `Import CSV do ${a.platform} ${a.account_id}: ${rows.length} řádků`);
+    return { rows: rows.length, from: dates[0] ?? null, to: dates.at(-1) ?? null };
   }
 
   removeAccount(id: number) {
@@ -632,12 +718,12 @@ export class AdsService {
   /** Meta dopočítává konverze zpětně, proto se vždy přepíše posledních N dní. */
   async syncAll(days = 28): Promise<{ accounts: number; rows: number; errors: number }> {
     const res = { accounts: 0, rows: 0, errors: 0 };
-    if (!this.source || this.syncing) return res;
+    if (this.syncing) return res;
     this.syncing = true;
     try {
       const until = this.today();
       const since = addDaysIso(until, -(days - 1));
-      for (const a of this.listAccounts()) {
+      for (const a of this.listAccounts().filter((x) => this.sources[x.platform])) {
         res.accounts++;
         try {
           res.rows += await this.syncAccount(a, since, until);
@@ -645,7 +731,7 @@ export class AdsService {
           res.errors++;
           const msg = (e as Error).message;
           this.repo.db.prepare("UPDATE ad_accounts SET last_error = ? WHERE id = ?").run(msg, a.id);
-          this.repo.log(null, "error", `Meta sync ${a.account_id}: ${msg}`);
+          this.repo.log(null, "error", `Sync reklam ${a.platform} ${a.account_id}: ${msg}`);
         }
       }
     } finally {
@@ -655,21 +741,14 @@ export class AdsService {
   }
 
   private async syncAccount(a: AccountRow, since: string, until: string): Promise<number> {
-    const rows = await this.source!.insights(a.account_id, since, until);
+    const platform = a.platform;
+    const rows = await this.sources[platform]!.insights(a.account_id, since, until);
     const t = this.now().toISOString();
-    const up = this.repo.db.prepare(
-      `INSERT INTO ad_stats (platform, account_id, date, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name,
-         spend, impressions, clicks, purchases, purchase_value, updated_at)
-       VALUES ('meta', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(platform, ad_id, date) DO UPDATE SET ad_name = excluded.ad_name, adset_id = excluded.adset_id,
-         adset_name = excluded.adset_name, campaign_id = excluded.campaign_id, campaign_name = excluded.campaign_name,
-         spend = excluded.spend, impressions = excluded.impressions, clicks = excluded.clicks,
-         purchases = excluded.purchases, purchase_value = excluded.purchase_value, updated_at = excluded.updated_at`,
-    );
+    const up = this.repo.db.prepare(UPSERT_STAT);
     this.repo.db.exec("BEGIN");
     try {
       for (const r of rows)
-        up.run(a.account_id, r.date, r.adId, r.adName, r.adsetId, r.adsetName, r.campaignId, r.campaignName, r.spend, r.impressions, r.clicks, r.purchases, r.purchaseValue, t);
+        up.run(platform, a.account_id, r.date, r.adId, r.adName, r.adsetId, r.adsetName, r.campaignId, r.campaignName, r.spend, r.impressions, r.clicks, r.purchases, r.purchaseValue, t);
       this.repo.db.prepare("UPDATE ad_accounts SET last_synced_at = ?, last_error = NULL WHERE id = ?").run(t, a.id);
       this.repo.db.exec("COMMIT");
     } catch (e) {
@@ -948,7 +1027,7 @@ export class AdsService {
     const links = new Map(
       (this.repo.db.prepare("SELECT level, meta_id, product_id FROM ad_links").all() as { level: string; meta_id: string; product_id: number }[]).map((l) => [`${l.level}:${l.meta_id}`, l.product_id]),
     );
-    const accounts = this.repo.db.prepare("SELECT account_id, currency FROM ad_accounts WHERE shop_id = ?").all(shop.id) as { account_id: string; currency: string }[];
+    const accounts = this.repo.db.prepare("SELECT platform, account_id, currency FROM ad_accounts WHERE shop_id = ?").all(shop.id) as { platform: string; account_id: string; currency: string }[];
     const C = new Map<string, CampAcc>();
     let unlinked = 0;
     const last3From = addDaysIso(to, -2);
@@ -957,7 +1036,7 @@ export class AdsService {
       const fx = convert(1, a.currency, shop.currency, this.cfg.fxToEur);
       if (fx == null) warnings.add(`Chybí kurz ${a.currency} → ${shop.currency} (OSS_FX_TO_EUR) – útrata účtu ${a.account_id} není přepočtená`);
       const k = fx ?? 1;
-      const rows = this.repo.db.prepare("SELECT * FROM ad_stats WHERE account_id = ? AND date BETWEEN ? AND ?").all(a.account_id, from, to) as any[];
+      const rows = this.repo.db.prepare("SELECT * FROM ad_stats WHERE platform = ? AND account_id = ? AND date BETWEEN ? AND ?").all(a.platform, a.account_id, from, to) as any[];
       for (const r of rows) {
         const spend = Number(r.spend) * k;
         const pid = links.get(`ad:${r.ad_id}`) ?? links.get(`adset:${r.adset_id}`) ?? links.get(`campaign:${r.campaign_id}`) ?? nameMatch([r.ad_name, r.adset_name, r.campaign_name], byAe);
@@ -1093,7 +1172,10 @@ export function adsRouter(ads: AdsService): Router {
     return { from, to };
   };
   r.get("/ads/status", (_q, res) => void res.json(ads.status()));
-  r.post("/ads/accounts", async (q, res) => void res.status(201).json(await ads.addAccount(shopQ(q.body?.shopId), String(q.body?.accountId ?? ""))));
+  r.post("/ads/accounts", async (q, res) =>
+    void res.status(201).json(await ads.addAccount(shopQ(q.body?.shopId), String(q.body?.accountId ?? ""), String(q.body?.platform ?? "meta"), q.body?.currency)),
+  );
+  r.post("/ads/import", (q, res) => void res.json(ads.importCsv(Number(q.body?.accountId), String(q.body?.csv ?? ""))));
   r.delete("/ads/accounts/:id", (q, res) => {
     ads.removeAccount(idParam(q));
     res.status(204).end();

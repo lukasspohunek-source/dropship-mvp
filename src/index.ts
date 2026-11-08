@@ -1,4 +1,5 @@
-import { AdsService, ClaudeAdsAdvisor, DEFAULT_THRESHOLDS, MetaAdsClient, adsRouter } from "./ads.js";
+import { AdsService, ClaudeAdsAdvisor, DEFAULT_THRESHOLDS, MetaAdsClient, adsRouter, type AdsSource } from "./ads.js";
+import { GoogleAdsSource, SklikSource, TikTokAdsSource } from "./ads-sources.js";
 import { AliExpressSupplier } from "./aliexpress.js";
 import { CatalogService, catalogRouter } from "./catalog.js";
 import { ComplianceService, complianceRouter } from "./compliance.js";
@@ -68,10 +69,15 @@ const trends = new TrendService(
   catalog,
 );
 const meta = cfg.ads.metaToken ? new MetaAdsClient(cfg.ads.metaToken, cfg.ads.graphVersion) : null;
+const adSources: Record<string, AdsSource> = {};
+if (meta) adSources.meta = meta;
+if (cfg.ads.tiktokToken) adSources.tiktok = new TikTokAdsSource(cfg.ads.tiktokToken);
+if (cfg.ads.google) adSources.google = new GoogleAdsSource(cfg.ads.google);
+if (cfg.ads.sklik) adSources.sklik = new SklikSource(cfg.ads.sklik.token, cfg.ads.sklik.moneyDivisor);
 const ads = new AdsService(
   repo,
   shops,
-  meta,
+  adSources,
   t.aiEnabled ? new ClaudeAdsAdvisor(undefined, t.model) : null,
   { feePct: cfg.ads.feePct, feeFixed: cfg.ads.feeFixed, fxToEur: cfg.compliance.fxToEur, thresholds: DEFAULT_THRESHOLDS },
   undefined,
@@ -116,14 +122,14 @@ if (cfg.catalog.syncHours > 0)
 if (cfg.compliance.retentionYears > 0)
   every(24 * 3600_000, "gdpr-retence", async () => compliance.applyRetention());
 
-if (cfg.ads.metaToken && cfg.ads.syncHours > 0)
+if (Object.keys(adSources).length && cfg.ads.syncHours > 0)
   every(cfg.ads.syncHours * 3600_000, "meta-sync", async () => {
     const r = await ads.syncAll();
     if (r.accounts) console.log(`meta: ${JSON.stringify(r)}`);
   });
 if (cfg.ads.analyzeDaily)
   every(24 * 3600_000, "ads-analyza", async () => {
-    if (cfg.ads.metaToken) await ads.syncAll();
+    await ads.syncAll();
     await ads.analyzeAll(cfg.ads.analyzeDays);
   });
 
