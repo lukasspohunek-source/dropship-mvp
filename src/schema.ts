@@ -1,5 +1,5 @@
 /** Verze schématu; zvyš při změně a doplň migraci v db.ts. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS shops (
@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS shipments (
   fulfillment_ids_json TEXT,
   fulfilled_at TEXT,
   delivered_at TEXT,
+  ae_amount REAL,
+  ae_currency TEXT,
   unpaid_warned INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   updated_at TEXT NOT NULL

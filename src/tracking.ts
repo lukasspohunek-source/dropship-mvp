@@ -57,6 +57,8 @@ export class TrackingService {
       logisticsStatus: info.logisticsStatus,
       trackingNumber: first?.number ?? null,
       carrier: first?.carrier ?? null,
+      aeAmount: info.orderAmount?.amount ?? null,
+      aeCurrency: info.orderAmount?.currency ?? null,
     });
 
     // PLACE_ORDER_SUCCESS dlouho po vytvoření obvykle znamená nezaplaceno – upozorni.

@@ -6,7 +6,8 @@ import type { Repo } from "./db.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { idParam, oneOf, optDate } from "./http.js";
 import type { Shop, ShopService } from "./shops.js";
-import type { OrderLine } from "./types.js";
+import { unitCostInShop } from "./catalog.js";
+import type { OrderLine, SupplierLine } from "./types.js";
 
 /**
  * Reklamy (Meta): útrata z Marketing API (jen čtení) + skutečný zisk z objednávek
@@ -220,6 +221,8 @@ export interface AdsTotals {
   mer: number | null;
   unlinkedSpend: number;
   metaPurchases: number;
+  /** Odkud je náklad: skutečná částka z AE / odhad (snapshot nebo poslední cena + doprava) / chybí. */
+  costSource: { actual: number; estimated: number; missing: number };
 }
 
 export interface AdsStats {
@@ -422,6 +425,7 @@ interface OrderAgg {
   total_price: number;
   total_tax: number;
   lines_json: string;
+  supplier_lines_json: string | null;
   utm_campaign: string | null;
   day: string;
 }
@@ -582,7 +586,7 @@ export class AdsService {
     const days = new Map<string, DayStats>();
     for (let d = from; d <= to; d = addDaysIso(d, 1)) days.set(d, { date: d, revenue: 0, grossProfit: 0, spend: 0, profitAfterAds: 0 });
 
-    const utm = this.collectOrders(shop, from, to, new Map(variants.map((v) => [v.shopify_variant_id, v])), prod, days);
+    const { utm, costSource } = this.collectOrders(shop, from, to, new Map(variants.map((v) => [v.shopify_variant_id, v])), prod, days);
     const { campaigns, unlinked } = this.collectAds(shop, from, to, products, prod, days, utm, warnings);
 
     const productList: ProductStats[] = [...P.values()]
@@ -614,6 +618,7 @@ export class AdsService {
         revenue, cogs: sum("cogs"), fees: sum("fees"), refunds: sum("refunds"), grossProfit: gross,
         spend, profitAfterAds: r2(gross - spend), mer: ratio(revenue, spend), unlinkedSpend: r2(unlinked),
         metaPurchases: campaigns.reduce((a, c) => a + c.metaPurchases, 0),
+        costSource,
       },
       products: productList,
       campaigns,
@@ -630,14 +635,16 @@ export class AdsService {
     variantMap: Map<string, VariantAgg>,
     prod: (pid: number | null) => ProdAcc,
     days: Map<string, DayStats>,
-  ): Map<string, { orders: number; revenue: number }> {
+  ): { utm: Map<string, { orders: number; revenue: number }>; costSource: AdsTotals["costSource"] } {
+    const costSource = { actual: 0, estimated: 0, missing: 0 };
     const orders = this.repo.db
       .prepare(
-        `SELECT id, total_price, total_tax, lines_json, utm_campaign, substr(created_at, 1, 10) AS day
+        `SELECT id, total_price, total_tax, lines_json, supplier_lines_json, utm_campaign, substr(created_at, 1, 10) AS day
          FROM orders WHERE shop_id = ? AND substr(created_at, 1, 10) BETWEEN ? AND ? AND status NOT IN ('CANCELLED','IGNORED')`,
       )
       .all(shop.id, from, to) as unknown as OrderAgg[];
     const refunds = new Map<number, number>();
+    const actual = this.actualAeCosts(shop, orders.map((o) => o.id));
     if (orders.length) {
       const rows = this.repo.db
         .prepare(`SELECT order_id, SUM(refund_amount) AS r FROM tickets WHERE resolution = 'REFUND' AND refund_amount > 0 AND order_id IN (${orders.map(() => "?").join(",")}) GROUP BY order_id`)
@@ -655,15 +662,34 @@ export class AdsService {
       const fees = net * (this.cfg.feePct / 100) + this.cfg.feeFixed;
       // Vrácené peníze jsou s DPH → převést na část bez DPH.
       const refund = (refunds.get(o.id) ?? 0) * (o.total_price > 0 ? net / o.total_price : 1);
+      // Náklad po řádcích: snapshot z odeslání → poslední známá cena; vždy + odhad dopravy.
+      const snap = new Map(((o.supplier_lines_json ? JSON.parse(o.supplier_lines_json) : []) as SupplierLine[]).map((x) => [x.lineItemGid, x]));
+      const est = lines.map((l) => {
+        const unit = snap.get(l.lineItemGid)?.unitCost ?? (l.variantId ? variantMap.get(l.variantId)?.last_cost : null);
+        return unit == null ? null : l.quantity * unitCostInShop(unit, shop.pricing);
+      });
+      const real = actual.get(o.id);
+      let lineCosts: (number | null)[];
+      if (real != null) {
+        // Skutečná částka z AE (zboží + doprava) rozdělená podle odhadu, jinak podle tržby.
+        const known = est.every((x) => x != null && x > 0);
+        const base = known ? (est as number[]) : weights;
+        const bsum = base.reduce((x, y) => x + y, 0) || 1;
+        lineCosts = base.map((x) => (real * x) / bsum);
+        costSource.actual++;
+      } else {
+        lineCosts = est;
+        if (est.some((x) => x == null)) costSource.missing++;
+        else costSource.estimated++;
+      }
       let orderGross = 0;
       lines.forEach((l, i) => {
         const share = weights[i]! / wsum;
         const v = l.variantId ? variantMap.get(l.variantId) : undefined;
         const p = prod(v?.product_id ?? null);
         const lineNet = net * share;
-        let cogs = 0;
-        if (v?.last_cost == null) p.missingCost = true;
-        else cogs = l.quantity * v.last_cost * shop.pricing.fxRate;
+        const cogs = lineCosts[i] ?? 0;
+        if (lineCosts[i] == null) p.missingCost = true;
         p.revenue += lineNet;
         p.cogs += cogs;
         p.fees += fees * share;
@@ -685,7 +711,30 @@ export class AdsService {
         utm.set(k, u);
       }
     }
-    return utm;
+    return { utm, costSource };
+  }
+
+  /**
+   * Skutečně zaplacené částky AliExpressu (zboží + doprava) – jen pro objednávky,
+   * kde ji známe u všech zásilek. Převod: měna AE → měna e-shopu kurzem e-shopu, jinak přes EUR.
+   */
+  private actualAeCosts(shop: Shop, orderIds: number[]): Map<number, number> {
+    const out = new Map<number, number>();
+    if (!orderIds.length) return out;
+    const rows = this.repo.db
+      .prepare(
+        `SELECT order_id, COUNT(*) AS n, COUNT(ae_amount) AS known, SUM(ae_amount) AS total, MAX(ae_currency) AS cur
+         FROM shipments WHERE order_id IN (${orderIds.map(() => "?").join(",")}) GROUP BY order_id`,
+      )
+      .all(...orderIds) as { order_id: number; n: number; known: number; total: number; cur: string | null }[];
+    const aeCur = (this.repo.db.prepare("SELECT ae_currency FROM products WHERE shop_id = ? LIMIT 1").get(shop.id) as { ae_currency: string } | undefined)?.ae_currency ?? "USD";
+    for (const r of rows) {
+      if (Number(r.known) !== Number(r.n) || r.total == null) continue;
+      const cur = r.cur ?? aeCur;
+      const v = cur === aeCur ? Number(r.total) * shop.pricing.fxRate : convert(Number(r.total), cur, shop.currency, this.cfg.fxToEur);
+      if (v != null) out.set(r.order_id, Math.round(v * 100) / 100);
+    }
+    return out;
   }
 
   /** Útrata z Meta po kampaních a produktech. */

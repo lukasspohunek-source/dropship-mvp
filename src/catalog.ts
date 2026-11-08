@@ -9,9 +9,14 @@ import type { AeProduct, AeSku, CatalogSource } from "./types.js";
 
 // ---------- ceny a sklad ----------
 
-/** Prodejní cena v měně e-shopu z nákladu v měně AE. Nikdy ne pod nákladem. */
+/** Náklad na kus v měně e-shopu: zboží + odhad dopravy z AE. */
+export function unitCostInShop(cost: number, r: PricingRules): number {
+  return Math.round((cost + (r.shippingPerUnit ?? 0)) * r.fxRate * 100) / 100;
+}
+
+/** Prodejní cena v měně e-shopu z nákladu v měně AE (včetně odhadu dopravy). Nikdy ne pod nákladem. */
 export function computePrice(cost: number, r: PricingRules): number {
-  const base = cost * r.fxRate;
+  const base = (cost + (r.shippingPerUnit ?? 0)) * r.fxRate;
   let p = base * r.multiplier + r.fixedAdd;
   if (r.roundStep > 0) p = Math.ceil(p / r.roundStep) * r.roundStep - r.roundOffset;
   if (p < base) p = Math.ceil(base);
@@ -301,7 +306,7 @@ export class CatalogService {
         variants: skus.map((s, i) => ({
           options: s.options,
           price: computePrice(s.price, shop.pricing),
-          cost: Math.round(s.price * shop.pricing.fxRate * 100) / 100,
+          cost: unitCostInShop(s.price, shop.pricing),
           sku: `AE-${aeId}-${s.skuId ?? i + 1}`,
           quantity: shopifyQty(s.stock, shop.pricing),
         })),
@@ -378,7 +383,7 @@ export class CatalogService {
           price = computePrice(sku.price, shop.pricing);
           cost = sku.price;
           if (r.shopify_variant_gid && (r.last_price == null || Math.abs(price - r.last_price) >= 0.01)) {
-            prices.push({ variantGid: r.shopify_variant_gid, price, cost: Math.round(sku.price * shop.pricing.fxRate * 100) / 100 });
+            prices.push({ variantGid: r.shopify_variant_gid, price, cost: unitCostInShop(sku.price, shop.pricing) });
             if (r.last_price && Math.abs(price - r.last_price) / r.last_price * 100 > shop.pricing.priceAlertPct)
               alerts.push(`${r.shopify_variant_id}: ${r.last_price} → ${price} ${shop.currency}`);
           }

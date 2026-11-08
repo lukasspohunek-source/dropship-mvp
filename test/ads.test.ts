@@ -24,6 +24,7 @@ import type { OrderLine } from "../src/types.js";
 import { memRepo, order, seedShop, shopService } from "./helpers.js";
 
 const FX = { EUR: 1, CZK: 0.04, USD: 0.92 };
+const DEFAULT_PRICING_FOR_TEST = { fxRate: 23, multiplier: 2, fixedAdd: 0, roundStep: 10, roundOffset: 1, stockBuffer: 2, stockCap: 50, priceAlertPct: 15 };
 const CFG = { feePct: 2, feeFixed: 0, fxToEur: FX, thresholds: DEFAULT_THRESHOLDS };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
 
@@ -173,7 +174,7 @@ test("chybějící kurz účtu se ohlásí", () => {
 function baseStats(over: Partial<AdsStats> = {}): AdsStats {
   return {
     shopId: 1, currency: "CZK", from: "2026-11-01", to: "2026-11-14",
-    totals: { orders: 0, revenue: 0, cogs: 0, fees: 0, refunds: 0, grossProfit: 0, spend: 0, profitAfterAds: 0, mer: null, unlinkedSpend: 0, metaPurchases: 0 },
+    totals: { orders: 0, revenue: 0, cogs: 0, fees: 0, refunds: 0, grossProfit: 0, spend: 0, profitAfterAds: 0, mer: null, unlinkedSpend: 0, metaPurchases: 0, costSource: { actual: 0, estimated: 0, missing: 0 } },
     products: [], campaigns: [], daily: [], warnings: [], ...over,
   };
 }
@@ -196,7 +197,7 @@ test("pravidla: ztráta, škálování, vyprodáno, nízká marže, organický p
 test("pravidla: kampaň bez prodeje, slabé CTR, únava, pixel, nepřiřazená útrata, ztrátový e-shop; řazení podle závažnosti", () => {
   const f = analyzeStats(
     baseStats({
-      totals: { orders: 2, revenue: 1000, cogs: 0, fees: 0, refunds: 0, grossProfit: 400, spend: 1000, profitAfterAds: -600, mer: 1, unlinkedSpend: 600, metaPurchases: 6 },
+      totals: { orders: 2, revenue: 1000, cogs: 0, fees: 0, refunds: 0, grossProfit: 400, spend: 1000, profitAfterAds: -600, mer: 1, unlinkedSpend: 600, metaPurchases: 6, costSource: { actual: 0, estimated: 0, missing: 0 } },
       campaigns: [
         C({ campaignId: "a", spend: 800, clicks: 40, impressions: 10000, ctrPct: 0.4 }),
         C({ campaignId: "b", spend: 200, impressions: 4000, clicks: 60, ctrPct: 1.5, ctrLast3Pct: 0.8, ctrPrev7Pct: 2, metaPurchases: 6, utmOrders: 2 }),
@@ -284,18 +285,48 @@ test("addAccount: bez Meta 409-chyba, validace ID, duplicita", async () => {
   await assert.rejects(ads.addAccount(s.shopId, "123456"), /už je/);
 });
 
-test("migrace DB v2 → v3 doplní UTM sloupce", () => {
+test("migrace DB v2 → v4 doplní UTM sloupce a částku AE u zásilek", () => {
   const dir = mkdtempSync(join(tmpdir(), "dsm-"));
   const file = join(dir, "t.db");
   new Repo(file).close();
   const raw = new DatabaseSync(file);
   raw.exec("DROP INDEX idx_orders_utm_campaign");
   for (const c of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "source_name"]) raw.exec(`ALTER TABLE orders DROP COLUMN ${c}`);
+  for (const c of ["ae_amount", "ae_currency"]) raw.exec(`ALTER TABLE shipments DROP COLUMN ${c}`);
   raw.exec("PRAGMA user_version = 2");
   raw.close();
   const repo = new Repo(file);
   const cols = (repo.db.prepare("PRAGMA table_info(orders)").all() as { name: string }[]).map((c) => c.name);
   assert.ok(["utm_source", "utm_campaign", "source_name"].every((c) => cols.includes(c)));
-  assert.equal((repo.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+  const scols = (repo.db.prepare("PRAGMA table_info(shipments)").all() as { name: string }[]).map((c) => c.name);
+  assert.ok(scols.includes("ae_amount") && scols.includes("ae_currency"));
+  assert.equal((repo.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
   repo.close();
+});
+
+test("náklad: skutečná částka z AE (zboží + doprava) > snapshot z odeslání > poslední cena; doprava v odhadu", async () => {
+  const s = setup();
+  const lamp = s.addProduct("1005006543210987", "Lampa", 5);
+  const shop = s.shops.get(s.shopId);
+  s.shops.update(s.shopId, { pricing: { ...shop.pricing, shippingPerUnit: 1.5 } });
+  // A: skutečná částka 7,43 USD z AE → 170,89 Kč
+  const a = s.addOrder("2026-11-05", [{ vid: lamp.vid, qty: 1 }], 605);
+  s.repo.markPlaced(a, ["81"], [{ lineItemGid: "gid://shopify/LineItem/10", title: "x", quantity: 1, aeProductId: "1005006543210987", aeSkuAttr: null, logisticsServiceName: null, unitCost: 4 }], false);
+  s.repo.updateShipmentStatus(s.repo.shipmentsForOrder(a)[0]!.id, { aeOrderStatus: "WAIT", logisticsStatus: "X", trackingNumber: null, carrier: null, aeAmount: 7.43, aeCurrency: "USD" });
+  // B: odesláno se snapshotem 4 USD (dnes už stojí 5) → (4 + 1,5) × 23 = 126,5
+  const b = s.addOrder("2026-11-06", [{ vid: lamp.vid, qty: 1 }], 605);
+  s.repo.markPlaced(b, ["82"], [{ lineItemGid: "gid://shopify/LineItem/20", title: "x", quantity: 1, aeProductId: "1005006543210987", aeSkuAttr: null, logisticsServiceName: null, unitCost: 4 }], false);
+  // C: bez snapshotu → (5 + 1,5) × 23 = 149,5
+  s.addOrder("2026-11-07", [{ vid: lamp.vid, qty: 1 }], 605);
+  const st = new AdsService(s.repo, s.shops, null, null, CFG, s.clock).stats(s.shopId, "2026-11-01", "2026-11-08");
+  const L = st.products.find((p) => p.productId === lamp.pid)!;
+  assert.equal(L.cogs, 446.89);
+  assert.deepEqual(st.totals.costSource, { actual: 1, estimated: 2, missing: 0 });
+});
+
+test("doprava se promítne do prodejní ceny i nákladu v Shopify", async () => {
+  const { computePrice, unitCostInShop } = await import("../src/catalog.js");
+  const r = { ...DEFAULT_PRICING_FOR_TEST, shippingPerUnit: 1.5 };
+  assert.equal(unitCostInShop(5, r), 149.5);
+  assert.equal(computePrice(5, r), 299); // (5+1,5)×23×2 = 299 → 300 − 1
 });

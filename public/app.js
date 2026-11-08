@@ -361,6 +361,7 @@ async function viewAds(root) {
       stat("Zisk před reklamou", moneyR(t.grossProfit, cur), null, `náklady ${moneyR(t.cogs, cur)} · poplatky ${moneyR(t.fees, cur)}`),
       stat("Útrata za reklamy", moneyR(t.spend, cur), null, t.unlinkedSpend ? `nepřiřazeno ${moneyR(t.unlinkedSpend, cur)}` : null),
       stat("Zisk po reklamě", moneyR(t.profitAfterAds, cur), null, t.mer ? `MER ${String(t.mer).replace(".", ",")}` : null)),
+    costSourceNote(t.costSource),
     profitChart(stats.daily, cur),
     report ? reportBlock(report) : h("p", { class: "muted" }, "Zatím žádná analýza – spusť „Analyzovat a doporučit“. Automaticky běží jednou denně."),
     h("h2", {}, "Produkty"),
@@ -377,6 +378,12 @@ async function viewAds(root) {
       h("div", { class: "row between" }, h("span", { class: "title" }, c.name), c.linked ? h("span", { class: "badge ok" }, "přiřazeno") : h("button", { class: "link", onclick: () => linkCampaign(c) }, "Přiřadit k produktu")),
       h("div", { class: "small muted" }, `útrata ${moneyR(c.spend, cur)} · CTR ${c.ctrPct ?? "–"} % · CPC ${c.cpc != null ? moneyR(c.cpc, cur) : "–"} · Meta nákupy ${c.metaPurchases} · objednávky z UTM ${c.utmOrders}`))) : h("p", { class: "muted" }, "Žádná data z Meta za období."),
   );
+}
+
+function costSourceNote(c) {
+  if (!c || c.actual + c.estimated + c.missing === 0) return null;
+  const parts = [c.actual ? `${c.actual}× skutečná částka z AliExpressu` : null, c.estimated ? `${c.estimated}× odhad (cena + doprava)` : null, c.missing ? `${c.missing}× bez ceny` : null].filter(Boolean);
+  return h("p", { class: `small ${c.missing ? "lvl-warn" : "muted"}` }, `Náklady objednávek: ${parts.join(", ")}.`);
 }
 
 function profitChart(daily, cur) {
@@ -691,6 +698,7 @@ async function viewSettings(root) {
 
 const PRICING_FIELDS = (p = {}) => [
   { name: "fxRate", label: "Kurz (měna e-shopu za 1 USD)", type: "number", step: "0.0001", value: p.fxRate },
+  { name: "shippingPerUnit", label: "Doprava z AliExpressu na kus (USD, odhad)", type: "number", step: "0.01", value: p.shippingPerUnit ?? 0 },
   { name: "multiplier", label: "Násobek nákladů (≥ 1)", type: "number", step: "0.01", value: p.multiplier },
   { name: "fixedAdd", label: "Pevná přirážka", type: "number", step: "0.01", value: p.fixedAdd },
   { name: "roundStep", label: "Zaokrouhlit nahoru na", type: "number", value: p.roundStep },

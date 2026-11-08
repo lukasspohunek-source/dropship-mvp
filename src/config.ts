@@ -118,6 +118,7 @@ export function loadConfig(env: Env = process.env): Config {
       stockBuffer: num("STOCK_BUFFER", 2),
       stockCap: num("STOCK_CAP", 50),
       priceAlertPct: num("PRICE_ALERT_PCT", 15),
+      shippingPerUnit: num("PRICE_SHIPPING_PER_UNIT", 0),
     },
     ae: {
       appKey: req("AE_APP_KEY"),

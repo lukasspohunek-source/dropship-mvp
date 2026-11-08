@@ -20,6 +20,8 @@ export interface PricingRules {
   stockCap: number;
   /** Varovat při změně ceny o víc než X %. */
   priceAlertPct: number;
+  /** Odhad dopravy z AliExpressu na kus v měně AE (přičte se k nákladu i do prodejní ceny). */
+  shippingPerUnit?: number;
 }
 
 export interface Shop {
@@ -76,6 +78,8 @@ export function validatePricing(p: PricingRules): void {
   const nonNeg = ["fixedAdd", "roundStep", "roundOffset", "stockBuffer", "stockCap", "priceAlertPct"] as const;
   for (const k of nonNeg)
     if (typeof p[k] !== "number" || !Number.isFinite(p[k]) || p[k] < 0) throw new ValidationError(`pricing.${k} musí být číslo ≥ 0`);
+  if (p.shippingPerUnit != null && !(Number.isFinite(p.shippingPerUnit) && p.shippingPerUnit >= 0))
+    throw new ValidationError("pricing.shippingPerUnit musí být číslo ≥ 0");
   if (!(p.fxRate > 0)) throw new ValidationError("pricing.fxRate musí být > 0");
   if (!(p.multiplier >= 1)) throw new ValidationError("pricing.multiplier musí být ≥ 1 (jinak prodáváš pod nákupní cenou)");
   if (p.roundStep > 0 && p.roundOffset >= p.roundStep) throw new ValidationError("pricing.roundOffset musí být menší než roundStep");

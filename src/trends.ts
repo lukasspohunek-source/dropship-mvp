@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { Router } from "express";
 import { z } from "zod";
-import { computePrice, type CatalogService } from "./catalog.js";
+import { computePrice, unitCostInShop, type CatalogService } from "./catalog.js";
 import type { Repo } from "./db.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { idParam } from "./http.js";
@@ -413,7 +413,7 @@ export class TrendService {
       const candidates = a.candidates
         .map((c) => {
           const ae = c.aeProductId ? byId.get(c.aeProductId) ?? null : null; // ID mimo seznam = halucinace → zahodit
-          const cost = ae ? Math.round(ae.priceAe * shop.pricing.fxRate * 100) / 100 : null;
+          const cost = ae ? unitCostInShop(ae.priceAe, shop.pricing) : null;
           const ourPrice = ae ? computePrice(ae.priceAe, shop.pricing) : null;
           return {
             ...c,

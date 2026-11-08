@@ -219,6 +219,7 @@ export class OrderService {
         aeProductId: m.aeProductId,
         aeSkuAttr: m.aeSkuAttr,
         logisticsServiceName: m.logisticsServiceName,
+        unitCost: m.lastCost ?? null,
       });
     }
     return { lines: out, unmapped };

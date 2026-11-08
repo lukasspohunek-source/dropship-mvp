@@ -96,7 +96,12 @@ reklama na vyprodaný produkt · vydělává → +20 % rozpočtu · nízká mar�
 slabá kreativa (CTR) · únava kreativy · Pixel hlásí víc nákupů než e-shop · nepřiřazená útrata.
 AI (`ANTHROPIC_API_KEY`) je shrne do kroků; smí použít jen spočítaná čísla. Nic se nespouští ani nemění v Meta automaticky.
 
-**Omezení**: náklad je podle poslední známé ceny z AliExpressu (ne z okamžiku objednávky); útrata v jiné měně
+**Náklad objednávky** (přesnost sestupně): skutečně zaplacená částka AE objednávky (zboží + doprava, `order_amount`
+z AE po odeslání) → nákupní cena uložená při odeslání + odhad dopravy (`PRICE_SHIPPING_PER_UNIT` / ceník e-shopu) →
+poslední známá cena + odhad dopravy. Přehled ukazuje, kolik objednávek má skutečný náklad a kolik odhad.
+Ověř na první reálné objednávce, že `order_amount` z AE obsahuje i dopravu.
+
+**Omezení**: útrata v jiné měně
 se přepočítá kurzy `OSS_FX_TO_EUR`; data z Meta se načítají za posledních 28 dní (Meta dopočítává konverze zpětně).
 
 ## AI trendy

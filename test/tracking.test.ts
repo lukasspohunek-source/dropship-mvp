@@ -29,8 +29,10 @@ test("bez trackingu nic; s trackingem vyřídí v Shopify a objednávka je FULFI
   assert.deepEqual(await t.tr.syncAll(), { checked: 1, fulfilled: 0, errors: 0 });
   assert.equal(t.store.calls.length, 0);
 
-  t.sup.orders.set("81", { orderStatus: "WAIT_BUYER_ACCEPT_GOODS", logisticsStatus: "SELLER_SEND_GOODS", productIds: [MAPPING.aeProductId], tracking: [{ number: "LP001CZ", carrier: "CAINIAO_STANDARD" }] });
+  t.sup.orders.set("81", { orderStatus: "WAIT_BUYER_ACCEPT_GOODS", logisticsStatus: "SELLER_SEND_GOODS", productIds: [MAPPING.aeProductId], tracking: [{ number: "LP001CZ", carrier: "CAINIAO_STANDARD" }], orderAmount: { amount: 12.4, currency: "USD" } });
   assert.deepEqual(await t.tr.syncAll(), { checked: 1, fulfilled: 1, errors: 0 });
+  const sh = t.repo.shipmentsForOrder(t.id)[0] as any;
+  assert.deepEqual([sh.ae_amount, sh.ae_currency], [12.4, "USD"], "skutečná částka z AE se uloží");
   const call = t.store.calls[0]!;
   assert.equal(call.orderGid, "gid://shopify/Order/5001");
   assert.deepEqual(call.lineItems, [{ lineItemGid: "gid://shopify/LineItem/1", quantity: 2 }]);
