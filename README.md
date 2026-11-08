@@ -94,7 +94,12 @@ potřebný ROAS = tržba / zisk před reklamou  (pod ním produkt prodělává)
 **Doporučení** (pravidla, čísla počítá kód): produkt po reklamě prodělává · kampaň utrácí bez prodeje ·
 reklama na vyprodaný produkt · vydělává → +20 % rozpočtu · nízká marže · prodává se i bez reklamy ·
 slabá kreativa (CTR) · únava kreativy · Pixel hlásí víc nákupů než e-shop · nepřiřazená útrata.
-AI (`ANTHROPIC_API_KEY`) je shrne do kroků; smí použít jen spočítaná čísla. Nic se nespouští ani nemění v Meta automaticky.
+AI (`ANTHROPIC_API_KEY`) je shrne do kroků; smí použít jen spočítaná čísla.
+
+**Provedení návrhů** (`ADS_ALLOW_WRITE=true`, token s `ads_management`): u nálezů „kampaň bez prodeje“, „ztrátový /
+vyprodaný produkt“ (pauza) a „vydělává“ (+20 % denního rozpočtu) je tlačítko. Provede se jen po potvrzení, z analýzy
+mladší 48 h, jednou; kampaně sdílené více produkty se nepozastavují; celkové rozpočty se nemění; vše je v historii
+(`GET /admin/ads/actions`) i s původními hodnotami. Nic se neděje automaticky.
 
 **Zákazníci**: noví vs. vracející se (podle CRM, jinak e-mailu), cena za nového zákazníka (nCAC), zisk z 1. objednávky
 a LTV 90 dní (tržba do 90 dní od 1. nákupu; zisk odhadnutý marží období). Pravidlo upozorní, když nový zákazník

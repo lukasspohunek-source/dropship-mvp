@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
 import {
+  type AdsWriter,
   AdsService,
   ClaudeAdsAdvisor,
   DEFAULT_THRESHOLDS,
@@ -180,7 +181,7 @@ function baseStats(over: Partial<AdsStats> = {}): AdsStats {
   };
 }
 const P = (o: Partial<AdsStats["products"][number]>) => ({ productId: 1, title: "Lampa", aeProductId: "1", orders: 0, units: 0, revenue: 0, cogs: 0, fees: 0, refunds: 0, grossProfit: 0, spend: 0, profitAfterAds: 0, marginPct: null, breakEvenRoas: null, roas: null, cpa: null, metaPurchases: 0, stockOut: false, missingCost: false, ...o });
-const C = (o: Partial<AdsStats["campaigns"][number]>) => ({ campaignId: "c1", name: "K1", spend: 0, impressions: 0, clicks: 0, ctrPct: null, cpc: null, metaPurchases: 0, metaValue: 0, metaRoas: null, utmOrders: 0, utmRevenue: 0, productIds: [], ctrLast3Pct: null, ctrPrev7Pct: null, linked: false, ...o });
+const C = (o: Partial<AdsStats["campaigns"][number]>) => ({ campaignId: "c1", platform: "meta", name: "K1", spend: 0, impressions: 0, clicks: 0, ctrPct: null, cpc: null, metaPurchases: 0, metaValue: 0, metaRoas: null, utmOrders: 0, utmRevenue: 0, productIds: [], ctrLast3Pct: null, ctrPrev7Pct: null, linked: false, ...o });
 const ids = (s: AdsStats) => analyzeStats(s, DEFAULT_THRESHOLDS, FX).map((f) => f.id);
 
 test("pravidla: ztráta, škálování, vyprodáno, nízká marže, organický prodej, chybějící cena", () => {
@@ -365,4 +366,88 @@ test("pravidlo nCAC: ztráta na zákazníkovi vs. zaplatí se opakovaným nákup
   assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({ ltv90Profit: 450, ltvCohortSize: 6 }) })), ["ncac-payback"]);
   assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({ ltv90Profit: 450, ltvCohortSize: 2 }) })), ["ncac-loss"], "malá kohorta nestačí");
   assert.deepEqual(ids(baseStats({ totals: tot, customers: cust({ ncac: 200 }) })), []);
+});
+
+// ---------- návrhy a provedení akcí ----------
+
+test("návrhy akcí: kampaň bez prodeje → pauza; ztrátový produkt jen s vlastními kampaněmi; škálování +20 %", () => {
+  const camp = [C({ campaignId: "100", spend: 800, clicks: 40, impressions: 1000, ctrPct: 4, productIds: [1] }), C({ campaignId: "200", spend: 10, productIds: [1, 2] }), C({ campaignId: "300", spend: 10, productIds: [2] })];
+  const f = analyzeStats(baseStats({
+    campaigns: camp,
+    products: [
+      P({ productId: 1, units: 2, orders: 2, revenue: 500, grossProfit: 200, spend: 810, profitAfterAds: -610, roas: 0.6, breakEvenRoas: 2.5, marginPct: 40 }),
+      P({ productId: 2, title: "Háček", units: 8, orders: 8, revenue: 4000, grossProfit: 1600, spend: 200, profitAfterAds: 1400, roas: 20, breakEvenRoas: 2.5, marginPct: 40 }),
+    ],
+  }), DEFAULT_THRESHOLDS, FX);
+  const by = Object.fromEntries(f.map((x) => [x.id, x.proposed]));
+  assert.deepEqual(by["noconv-100"], { type: "pause", platform: "meta", campaignIds: ["100"] });
+  assert.deepEqual(by["loss-1"], { type: "pause", platform: "meta", campaignIds: ["100"] }, "kampaň 200 sdílí produkt 2 → nepozastavit");
+  assert.deepEqual(by["scale-2"], { type: "budget", platform: "meta", campaignIds: ["300"], factor: 1.2 });
+});
+
+function execSetup(writer?: AdsWriter) {
+  const s = setup();
+  const lamp = s.addProduct("1005006543210987", "Lampa", 20);
+  s.addOrder("2026-11-05", [{ vid: lamp.vid, qty: 1 }], 605);
+  s.addAccount("111", "CZK");
+  s.addStat("111", { date: "2026-11-05", adId: "1", campaignId: "555", campaignName: "Lampa 1005006543210987", spend: 900, impressions: 3000, clicks: 90, purchases: 1 });
+  const calls: string[] = [];
+  const w: AdsWriter = writer ?? {
+    pauseCampaign: async (id) => (calls.push(`pause:${id}`), { before: { status: "ACTIVE" }, after: { status: "PAUSED" } }),
+    scaleBudget: async (id, k) => (calls.push(`scale:${id}:${k}`), { before: 1000, after: 1200 }),
+  };
+  let now = s.clock();
+  const ads = new AdsService(s.repo, s.shops, null, null, CFG, () => now, { meta: w });
+  return { s, lamp, ads, calls, later: (h: number) => (now = new Date(now.getTime() + h * 3600e3)) };
+}
+
+test("provedení: jen s potvrzeným návrhem, jednou, ne ze staré analýzy, s auditem", async () => {
+  const t = execSetup();
+  const rep = await t.ads.analyze(t.s.shopId, 14);
+  const fid = `loss-${t.lamp.pid}`;
+  assert.ok(rep.findings.find((f) => f.id === fid)?.proposed);
+  assert.deepEqual(await t.ads.execute(rep.id, fid), { ok: true, results: [{ campaignId: "555", ok: true, before: { status: "ACTIVE" }, after: { status: "PAUSED" } }] });
+  assert.deepEqual(t.calls, ["pause:555"]);
+  await assert.rejects(t.ads.execute(rep.id, fid), /už byla provedena/);
+  await assert.rejects(t.ads.execute(rep.id, "neexistuje"), /navrženou akci/);
+  assert.equal(t.ads.listActions()[0].status, "OK");
+  t.later(49);
+  const rep2 = { id: rep.id };
+  await assert.rejects(t.ads.execute(rep2.id, fid), /starší než 48 h/);
+});
+
+test("provedení: vypnutý zápis a chyba platformy se zaznamená", async () => {
+  const off = execSetup();
+  const noWrite = new AdsService(off.s.repo, off.s.shops, null, null, CFG, off.s.clock);
+  const rep = await noWrite.analyze(off.s.shopId, 14);
+  await assert.rejects(noWrite.execute(rep.id, `loss-${off.lamp.pid}`), /ADS_ALLOW_WRITE/);
+  const bad = execSetup({ pauseCampaign: async () => { throw new Error("Meta API (200): permission"); }, scaleBudget: async () => ({ before: 0, after: 0 }) });
+  const r = await bad.ads.analyze(bad.s.shopId, 14);
+  const out = await bad.ads.execute(r.id, `loss-${bad.lamp.pid}`);
+  assert.equal(out.ok, false);
+  assert.equal(bad.ads.listActions()[0].status, "ERROR");
+});
+
+test("MetaAdsClient zápis: pauza, rozpočet kampaně i sad, celkový rozpočet odmítne, strop ×1,2", async () => {
+  const calls: { method: string; url: string; body?: string }[] = [];
+  let campaign: Record<string, string> = { name: "K", daily_budget: "5000" };
+  const fake = (async (u: string, init?: RequestInit) => {
+    calls.push({ method: init?.method ?? "GET", url: u, body: init?.body ? String(init.body) : undefined });
+    if (init?.method === "POST") return json({ success: true });
+    if (u.includes("/adsets?")) return json({ data: [{ id: "71", daily_budget: "1000", effective_status: "ACTIVE" }, { id: "72", daily_budget: "900", effective_status: "PAUSED" }] });
+    return json({ status: "ACTIVE", ...campaign });
+  }) as unknown as typeof fetch;
+  const m = new MetaAdsClient("T", "v26.0", fake);
+  await m.pauseCampaign("555");
+  assert.equal(calls.at(-1)!.body, "status=PAUSED");
+  assert.match(calls.at(-1)!.url, /\/v26\.0\/555$/);
+  assert.deepEqual(await m.scaleBudget("555", 1.2), { before: { campaign: "5000" }, after: { campaign: "6000" } });
+  campaign = { name: "K" };
+  assert.deepEqual(await m.scaleBudget("555", 1.2), { before: { "71": "1000" }, after: { "71": "1200" } }, "jen aktivní sady");
+  campaign = { name: "K", lifetime_budget: "100000" };
+  await assert.rejects(m.scaleBudget("555", 1.2), /celkový rozpočet/);
+  await assert.rejects(m.scaleBudget("555", 1.5), /×1\.2/);
+  await assert.rejects(m.pauseCampaign("abc"), /Neplatné/);
+  const denied = new MetaAdsClient("T", "v26.0", (async (_u: string, init?: RequestInit) => (init?.method === "POST" ? json({ error: { code: 200, message: "Permissions error" } }, 403) : json({ status: "ACTIVE" }))) as unknown as typeof fetch);
+  await assert.rejects(denied.pauseCampaign("555"), /ads_management/);
 });

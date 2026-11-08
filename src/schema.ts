@@ -263,6 +263,17 @@ CREATE TABLE IF NOT EXISTS ad_reports (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ad_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id INTEGER NOT NULL REFERENCES ad_reports(id),
+  finding_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  type TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

@@ -49,9 +49,18 @@ export function pickAction(list: unknown): number {
   return 0;
 }
 
+/** Zápis do reklamní platformy (jen po potvrzení uživatelem). */
+export interface AdsWriter {
+  pauseCampaign(campaignId: string): Promise<{ before: unknown; after: unknown }>;
+  /** Vynásobí denní rozpočet kampaně (CBO) nebo jejích aktivních sad; celkový rozpočet odmítne. */
+  scaleBudget(campaignId: string, factor: number): Promise<{ before: unknown; after: unknown }>;
+}
+
+export const MAX_BUDGET_FACTOR = 1.2;
+
 export const normAccountId = (id: string) => String(id).trim().replace(/^act_/, "");
 
-export class MetaAdsClient implements AdsSource {
+export class MetaAdsClient implements AdsSource, AdsWriter {
   constructor(
     private readonly token: string,
     private readonly version = "v26.0",
@@ -76,6 +85,49 @@ export class MetaAdsClient implements AdsSource {
     }
     if (!res.ok) throw new Error(`Meta API HTTP ${res.status}`);
     return json;
+  }
+
+  private async post(path: string, fields: Record<string, string>): Promise<any> {
+    const res = await this.fetchImpl(`https://graph.facebook.com/${this.version}/${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields).toString(),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (j?.error) throw new Error(`Meta API (${j.error.code ?? res.status}): ${j.error.message ?? "chyba"}${j.error.code === 200 || j.error.code === 10 ? " – token nemá oprávnění ads_management" : ""}`);
+    if (!res.ok) throw new Error(`Meta API HTTP ${res.status}`);
+    return j;
+  }
+
+  async pauseCampaign(campaignId: string) {
+    if (!/^\d+$/.test(campaignId)) throw new Error("Neplatné ID kampaně");
+    const before = await this.get(`https://graph.facebook.com/${this.version}/${campaignId}?fields=name,status`);
+    await this.post(campaignId, { status: "PAUSED" });
+    return { before: { status: before.status }, after: { status: "PAUSED" } };
+  }
+
+  async scaleBudget(campaignId: string, factor: number) {
+    if (!/^\d+$/.test(campaignId)) throw new Error("Neplatné ID kampaně");
+    if (!(factor > 0 && factor <= MAX_BUDGET_FACTOR)) throw new Error(`Rozpočet jde měnit nejvýš ×${MAX_BUDGET_FACTOR}`);
+    const c = await this.get(`https://graph.facebook.com/${this.version}/${campaignId}?fields=name,daily_budget,lifetime_budget`);
+    const bump = (v: string) => String(Math.round(Number(v) * factor));
+    if (c.daily_budget) {
+      await this.post(campaignId, { daily_budget: bump(c.daily_budget) });
+      return { before: { campaign: c.daily_budget }, after: { campaign: bump(c.daily_budget) } };
+    }
+    if (c.lifetime_budget) throw new Error("Kampaň má celkový rozpočet – změň ho ručně v Ads Manageru");
+    const sets = await this.get(`https://graph.facebook.com/${this.version}/${campaignId}/adsets?${new URLSearchParams({ fields: "id,daily_budget,effective_status", limit: "100" })}`);
+    const active = (sets.data ?? []).filter((s: any) => s.daily_budget && s.effective_status === "ACTIVE");
+    if (!active.length) throw new Error("Kampaň nemá aktivní sady s denním rozpočtem");
+    const before: Record<string, string> = {};
+    const after: Record<string, string> = {};
+    for (const s of active) {
+      await this.post(String(s.id), { daily_budget: bump(s.daily_budget) });
+      before[s.id] = s.daily_budget;
+      after[s.id] = bump(s.daily_budget);
+    }
+    return { before, after };
   }
 
   async account(accountId: string) {
@@ -184,6 +236,7 @@ export interface ProductStats {
 
 export interface CampaignStats {
   campaignId: string;
+  platform: string;
   name: string;
   spend: number;
   impressions: number;
@@ -301,6 +354,27 @@ export interface Finding {
   action: string;
   /** Odhad dopadu v měně e-shopu (pro řazení). */
   impact: number;
+  /** Návrh, který jde po potvrzení provést přes API reklamní platformy. */
+  proposed?: Proposal;
+}
+
+export interface Proposal {
+  type: "pause" | "budget";
+  platform: string;
+  campaignIds: string[];
+  /** Jen pro "budget": násobek denního rozpočtu (max. 1,2). */
+  factor?: number;
+}
+
+/** Kampaně, které propagují jen tento produkt (pozastavit/škálovat je nepoškodí jiné produkty). */
+function exclusiveCampaigns(s: AdsStats, productId: number): CampaignStats[] {
+  return s.campaigns.filter((c) => c.productIds.length === 1 && c.productIds[0] === productId);
+}
+
+function propose(type: Proposal["type"], cs: CampaignStats[], factor?: number): Proposal | undefined {
+  const byPlatform = cs.filter((c) => c.platform === (cs[0]?.platform ?? ""));
+  if (!byPlatform.length) return undefined;
+  return { type, platform: byPlatform[0]!.platform, campaignIds: byPlatform.map((c) => c.campaignId), ...(factor ? { factor } : {}) };
 }
 
 const SEV_ORDER: Record<Severity, number> = { critical: 0, warning: 1, opportunity: 2, info: 3 };
@@ -354,6 +428,14 @@ export function analyzeStats(s: AdsStats, t: Thresholds, fxToEur: Record<string,
     ...s.products.flatMap((p) => productFindings(p, t, minSpend, f)),
     ...s.campaigns.flatMap((c) => campaignFindings(c, t, minSpend, f)),
   ];
+  // Návrhy akcí: jen kampaně jednoho produktu, jinak by zásah poškodil ostatní produkty.
+  for (const x of out) {
+    const pid = x.ref.productId;
+    if (x.id.startsWith("noconv-")) x.proposed = propose("pause", s.campaigns.filter((c) => c.campaignId === x.ref.campaignId));
+    else if (pid != null && (x.id.startsWith("loss-") || x.id.startsWith("stockout-"))) x.proposed = propose("pause", exclusiveCampaigns(s, pid));
+    else if (pid != null && x.id.startsWith("scale-")) x.proposed = propose("budget", exclusiveCampaigns(s, pid), 1.2);
+    if (!x.proposed) delete x.proposed;
+  }
   const cu = s.customers;
   if (cu.ncac != null && cu.avgFirstOrderProfit != null && cu.newCustomers >= 3 && s.totals.spend >= minSpend && cu.ncac > cu.avgFirstOrderProfit) {
     const paysBack = cu.ltv90Profit != null && cu.ltvCohortSize >= 5 && cu.ltv90Profit >= cu.ncac;
@@ -479,6 +561,8 @@ export class AdsService {
     private readonly advisor: AdsAdvisor | null,
     private readonly cfg: AdsConfig,
     private readonly now: () => Date = () => new Date(),
+    /** Zápis do platforem – jen když ADS_ALLOW_WRITE=true. Klíč = platforma. */
+    private readonly writers: Record<string, AdsWriter> = {},
   ) {}
 
   private today() {
@@ -486,7 +570,39 @@ export class AdsService {
   }
 
   status() {
-    return { meta: this.source != null, ai: this.advisor != null, accounts: this.listAccounts() };
+    return { meta: this.source != null, ai: this.advisor != null, write: Object.keys(this.writers), accounts: this.listAccounts() };
+  }
+
+  // ---- provedení návrhu (po potvrzení) ----
+  async execute(reportId: number, findingId: string) {
+    const rep = this.getReport(reportId);
+    const ageH = (this.now().getTime() - Date.parse(rep.createdAt)) / 3600_000;
+    if (ageH > 48) throw new ConflictError("Analýza je starší než 48 h – spusť novou, ať akce stojí na aktuálních číslech");
+    const f = rep.findings.find((x) => x.id === findingId);
+    if (!f?.proposed) throw new NotFoundError("Nález nemá navrženou akci");
+    const w = this.writers[f.proposed.platform];
+    if (!w) throw new ConflictError(`Zápis do ${f.proposed.platform} je vypnutý (ADS_ALLOW_WRITE) nebo platforma změny nepodporuje`);
+    if (this.repo.db.prepare("SELECT 1 FROM ad_actions WHERE report_id = ? AND finding_id = ? AND status = 'OK'").get(reportId, findingId))
+      throw new ConflictError("Tahle akce už byla provedena");
+    const results: { campaignId: string; ok: boolean; before?: unknown; after?: unknown; error?: string }[] = [];
+    for (const cid of f.proposed.campaignIds) {
+      try {
+        const r = f.proposed.type === "pause" ? await w.pauseCampaign(cid) : await w.scaleBudget(cid, Math.min(f.proposed.factor ?? 1, MAX_BUDGET_FACTOR));
+        results.push({ campaignId: cid, ok: true, ...r });
+      } catch (e) {
+        results.push({ campaignId: cid, ok: false, error: (e as Error).message });
+      }
+    }
+    const ok = results.every((r) => r.ok);
+    this.repo.db
+      .prepare("INSERT INTO ad_actions (report_id, finding_id, platform, type, result_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(reportId, findingId, f.proposed.platform, f.proposed.type, JSON.stringify(results), ok ? "OK" : "ERROR", this.now().toISOString());
+    this.repo.log(null, ok ? "info" : "error", `Reklamy: ${f.proposed.type === "pause" ? "pozastavení" : "změna rozpočtu"} ${f.proposed.campaignIds.join(", ")} (${f.title}) – ${ok ? "OK" : "chyba"}`);
+    return { ok, results };
+  }
+
+  listActions() {
+    return (this.repo.db.prepare("SELECT * FROM ad_actions ORDER BY id DESC LIMIT 50").all() as any[]).map((a) => ({ ...a, result: JSON.parse(a.result_json), result_json: undefined }));
   }
 
   // ---- účty ----
@@ -856,7 +972,7 @@ export class AdsService {
         const cid = String(r.campaign_id ?? "unknown");
         let c = C.get(cid);
         if (!c) {
-          c = { campaignId: cid, name: r.campaign_name ?? cid, spend: 0, impressions: 0, clicks: 0, ctrPct: null, cpc: null, metaPurchases: 0, metaValue: 0, metaRoas: null, utmOrders: 0, utmRevenue: 0, productIds: [], ctrLast3Pct: null, ctrPrev7Pct: null, linked: false, _prod: new Set(), _l3: [0, 0], _p7: [0, 0] };
+          c = { campaignId: cid, platform: String(r.platform ?? "meta"), name: r.campaign_name ?? cid, spend: 0, impressions: 0, clicks: 0, ctrPct: null, cpc: null, metaPurchases: 0, metaValue: 0, metaRoas: null, utmOrders: 0, utmRevenue: 0, productIds: [], ctrLast3Pct: null, ctrPrev7Pct: null, linked: false, _prod: new Set(), _l3: [0, 0], _p7: [0, 0] };
           C.set(cid, c);
         }
         c.spend += spend;
@@ -999,5 +1115,10 @@ export function adsRouter(ads: AdsService): Router {
   r.post("/ads/analyze", async (q, res) => void res.status(201).json(await ads.analyze(shopQ(q.body?.shopId), Number(q.body?.days ?? 14))));
   r.get("/ads/reports", (q, res) => void res.json(ads.listReports(q.query.shopId ? Number(q.query.shopId) : undefined)));
   r.get("/ads/reports/:id", (q, res) => void res.json(ads.getReport(idParam(q))));
+  r.post("/ads/actions", async (q, res) => {
+    if (q.body?.confirm !== true) throw new ValidationError("Akci je potřeba potvrdit (confirm: true)");
+    res.json(await ads.execute(Number(q.body?.reportId), String(q.body?.findingId ?? "")));
+  });
+  r.get("/ads/actions", (_q, res) => void res.json(ads.listActions()));
   return r;
 }

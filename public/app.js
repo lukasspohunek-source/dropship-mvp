@@ -341,6 +341,7 @@ async function viewAds(root) {
   const to = new Date().toISOString().slice(0, 10);
   const from = new Date(Date.now() - (days - 1) * 86400e3).toISOString().slice(0, 10);
   const [st, stats, reports] = await Promise.all([api("/ads/status"), api(`/ads/stats?shopId=${shopId}&from=${from}&to=${to}`), api(`/ads/reports?shopId=${shopId}`)]);
+  state.adsWrite = st.write;
   const report = reports[0] ? await api(`/ads/reports/${reports[0].id}`) : null;
   const cur = stats.currency;
   const t = stats.totals;
@@ -420,8 +421,21 @@ function reportBlock(r) {
       h("div", { class: "row between" }, h("span", { class: "title" }, f.title), h("span", { class: `badge ${SEV[f.severity][1]}` }, SEV[f.severity][0])),
       h("div", { class: "small muted" }, f.ref.name),
       h("div", { class: "small" }, f.detail),
-      h("div", { class: "small" }, h("b", {}, "Co udělat: "), f.action))) : h("p", { class: "muted" }, "Žádné nálezy – nic nehoří."),
+      h("div", { class: "small" }, h("b", {}, "Co udělat: "), f.action),
+      proposalButton(r, f))) : h("p", { class: "muted" }, "Žádné nálezy – nic nehoří."),
   );
+}
+
+function proposalButton(r, f) {
+  const p = f.proposed;
+  if (!p) return null;
+  const label = p.type === "pause" ? `Pozastavit ${plural(p.campaignIds.length, "kampaň", "kampaně", "kampaní")}` : "Navýšit rozpočet o 20 %";
+  if (!(state.adsWrite || []).includes(p.platform)) return h("div", { class: "small muted" }, `Návrh: ${label} (zápis do ${p.platform} je vypnutý – ADS_ALLOW_WRITE)`);
+  return h("button", { class: p.type === "pause" ? "danger" : "primary", onclick: () => {
+    const what = `${label} v ${p.platform}: ${p.campaignIds.join(", ")}\n\nDůvod: ${f.title}\n${f.detail}\n\nOpravdu provést?`;
+    if (!confirm(what)) return;
+    act(() => api("/ads/actions", { method: "POST", body: { reportId: r.id, findingId: f.id, confirm: true } }), null, (res) => (toast(res.ok ? "Provedeno" : `Částečně selhalo: ${res.results.filter((x) => !x.ok).map((x) => x.error).join("; ")}`, !res.ok), rerender()));
+  } }, label);
 }
 
 async function linkCampaign(c) {

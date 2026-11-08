@@ -67,12 +67,15 @@ const trends = new TrendService(
   { maxRunsPerDay: t.maxRunsPerDay },
   catalog,
 );
+const meta = cfg.ads.metaToken ? new MetaAdsClient(cfg.ads.metaToken, cfg.ads.graphVersion) : null;
 const ads = new AdsService(
   repo,
   shops,
-  cfg.ads.metaToken ? new MetaAdsClient(cfg.ads.metaToken, cfg.ads.graphVersion) : null,
+  meta,
   t.aiEnabled ? new ClaudeAdsAdvisor(undefined, t.model) : null,
   { feePct: cfg.ads.feePct, feeFixed: cfg.ads.feeFixed, fxToEur: cfg.compliance.fxToEur, thresholds: DEFAULT_THRESHOLDS },
+  undefined,
+  cfg.ads.allowWrite && meta ? { meta } : {},
 );
 // Běh, který spadl s procesem, by visel jako RUNNING a blokoval další.
 repo.db.prepare("UPDATE trend_runs SET status = 'FAILED', error = 'Přerušeno restartem' WHERE status = 'RUNNING'").run();

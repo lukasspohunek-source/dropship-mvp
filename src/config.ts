@@ -45,6 +45,8 @@ export interface Config {
     syncHours: number;
     analyzeDays: number;
     analyzeDaily: boolean;
+    /** Povolit provádění navržených akcí (pozastavit / +20 % rozpočtu) po potvrzení. Token pak potřebuje ads_management. */
+    allowWrite: boolean;
   };
   trends: {
     /** Claude API: klíč čte SDK z ANTHROPIC_API_KEY. */
@@ -150,6 +152,7 @@ export function loadConfig(env: Env = process.env): Config {
       syncHours: num("ADS_SYNC_HOURS", 6),
       analyzeDays: num("ADS_ANALYZE_DAYS", 14),
       analyzeDaily: bool("ADS_ANALYZE_DAILY", true),
+      allowWrite: bool("ADS_ALLOW_WRITE", false),
     },
     trends: {
       aiEnabled: Boolean(env.ANTHROPIC_API_KEY?.trim() || env.ANTHROPIC_AUTH_TOKEN?.trim()),
