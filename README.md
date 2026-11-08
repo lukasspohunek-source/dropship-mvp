@@ -22,6 +22,7 @@ Shopify e-shopy ── webhook orders/paid ──► dropship-mvp ──► AliE
 | **Katalog** | import produktu z AE podle odkazu (koncept v Shopify), cenové pravidlo per e-shop, nákupní cena do Shopify, hlídání cen a skladu, stažené produkty → sklad 0 |
 | **CRM** | zákazníci z objednávek (napříč e-shopy), poznámky, úkoly, leady, reklamace a odstoupení se lhůtami, segmenty + CSV, přehled |
 | **Compliance** | GPSR údaje u produktů, údaje prodávajícího, formulář pro odstoupení, GDPR export/anonymizace/retence, DPH report (OSS/IOSS) |
+| **Reklamy** | útrata z Meta (Facebook/Instagram, jen čtení), skutečný zisk po reklamě po produktech a kampaních, graf po dnech, denní automatická analýza s doporučeními + AI shrnutí |
 | **AI trendy** | signály z Google Trends/Shopping (SerpApi), Seznamu, Heureky, TikToku a Instagramu (Bright Data) + bestsellery AliExpressu → Claude vybere kandidáty, kód spočítá marži, import jedním klepnutím |
 | **Rozhraní** | `/app` – mobilní web v designu POKOVO (tokeny z Pokovo-konfiguratory), přihlášení admin tokenem |
 
@@ -72,6 +73,31 @@ V rozhraní **Nastavení → AliExpress → Propojit** (OAuth, token se pak obno
 - **Nastavení → Prodávající**: firma, IČO, sídlo, adresa pro vrácení (pro každý e-shop).
 - **Produkty → detail → GPSR**: výrobce, odpovědná osoba v EU, upozornění. Přehled vidíš na úvodní stránce.
 - `OSS_FX_TO_EUR` – kurzy pro DPH report; `RETENTION_YEARS` – automatická anonymizace (0 = vypnuto).
+
+## Reklamy a zisk (Meta)
+
+Produkty → Reklamy. Počítá **skutečný zisk**, který Meta nezná:
+
+```
+tržba bez DPH − nákup z AliExpressu (kurz e-shopu) − platební poplatky − vrácené peníze = zisk před reklamou
+zisk před reklamou − útrata za reklamu = zisk po reklamě
+potřebný ROAS = tržba / zisk před reklamou  (pod ním produkt prodělává)
+```
+
+**Nastavení**
+1. Business Manager → Uživatelé systému → vytvoř uživatele, přiřaď reklamní účet, vygeneruj token s oprávněním `ads_read` → `META_ACCESS_TOKEN`.
+2. Nastavení → Reklamy → přidej ID reklamního účtu (`act_…`) k e-shopu.
+3. Do „Parametry URL“ reklam vlož `utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_content={{ad.name}}`
+   – objednávky se pak spárují s kampaní i bez Pixelu.
+4. Přiřazení reklam k produktům: automaticky, když název kampaně/sady/reklamy obsahuje ID produktu z AliExpressu; jinak ručně.
+
+**Doporučení** (pravidla, čísla počítá kód): produkt po reklamě prodělává · kampaň utrácí bez prodeje ·
+reklama na vyprodaný produkt · vydělává → +20 % rozpočtu · nízká marže · prodává se i bez reklamy ·
+slabá kreativa (CTR) · únava kreativy · Pixel hlásí víc nákupů než e-shop · nepřiřazená útrata.
+AI (`ANTHROPIC_API_KEY`) je shrne do kroků; smí použít jen spočítaná čísla. Nic se nespouští ani nemění v Meta automaticky.
+
+**Omezení**: náklad je podle poslední známé ceny z AliExpressu (ne z okamžiku objednávky); útrata v jiné měně
+se přepočítá kurzy `OSS_FX_TO_EUR`; data z Meta se načítají za posledních 28 dní (Meta dopočítává konverze zpětně).
 
 ## AI trendy
 

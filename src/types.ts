@@ -32,6 +32,16 @@ export interface OrderLine {
   sku: string | null;
   quantity: number;
   requiresShipping: boolean;
+  /** Cena za kus v měně objednávky (s DPH, po slevě na položce), pokud ji payload obsahuje. */
+  unitPrice?: number | null;
+}
+
+export interface OrderAttribution {
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmContent: string | null;
+  sourceName: string | null;
 }
 
 export interface IncomingOrder {
@@ -45,6 +55,7 @@ export interface IncomingOrder {
   address: ShippingAddress | null;
   lines: OrderLine[];
   customer: IncomingCustomer | null;
+  attribution?: OrderAttribution | null;
 }
 
 export interface IncomingCustomer {

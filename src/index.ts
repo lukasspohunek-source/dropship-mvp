@@ -1,3 +1,4 @@
+import { AdsService, ClaudeAdsAdvisor, DEFAULT_THRESHOLDS, MetaAdsClient, adsRouter } from "./ads.js";
 import { AliExpressSupplier } from "./aliexpress.js";
 import { CatalogService, catalogRouter } from "./catalog.js";
 import { ComplianceService, complianceRouter } from "./compliance.js";
@@ -66,6 +67,13 @@ const trends = new TrendService(
   { maxRunsPerDay: t.maxRunsPerDay },
   catalog,
 );
+const ads = new AdsService(
+  repo,
+  shops,
+  cfg.ads.metaToken ? new MetaAdsClient(cfg.ads.metaToken, cfg.ads.graphVersion) : null,
+  t.aiEnabled ? new ClaudeAdsAdvisor(undefined, t.model) : null,
+  { feePct: cfg.ads.feePct, feeFixed: cfg.ads.feeFixed, fxToEur: cfg.compliance.fxToEur, thresholds: DEFAULT_THRESHOLDS },
+);
 // Běh, který spadl s procesem, by visel jako RUNNING a blokoval další.
 repo.db.prepare("UPDATE trend_runs SET status = 'FAILED', error = 'Přerušeno restartem' WHERE status = 'RUNNING'").run();
 
@@ -76,7 +84,7 @@ const app = createApp({
   oauth: supplier,
   shops,
   onOrderCreated: (id, incoming) => void crm.recordOrder(id, incoming),
-  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance), trendsRouter(trends, () => orders.reprocessWaitingForMapping())],
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance), trendsRouter(trends, () => orders.reprocessWaitingForMapping()), adsRouter(ads)],
   cfg: { adminToken: cfg.adminToken, publicBaseUrl: cfg.publicBaseUrl, dryRun: cfg.orders.dryRun, autoPay: cfg.orders.autoPay.enabled },
 });
 
@@ -104,6 +112,17 @@ if (cfg.catalog.syncHours > 0)
 
 if (cfg.compliance.retentionYears > 0)
   every(24 * 3600_000, "gdpr-retence", async () => compliance.applyRetention());
+
+if (cfg.ads.metaToken && cfg.ads.syncHours > 0)
+  every(cfg.ads.syncHours * 3600_000, "meta-sync", async () => {
+    const r = await ads.syncAll();
+    if (r.accounts) console.log(`meta: ${JSON.stringify(r)}`);
+  });
+if (cfg.ads.analyzeDaily)
+  every(24 * 3600_000, "ads-analyza", async () => {
+    if (cfg.ads.metaToken) await ads.syncAll();
+    await ads.analyzeAll(cfg.ads.analyzeDays);
+  });
 
 function shutdown(sig: string) {
   console.log(`${sig} – ukončuji`);

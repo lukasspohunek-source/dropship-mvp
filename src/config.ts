@@ -36,6 +36,16 @@ export interface Config {
     syncHours: number;
   };
   compliance: { sellerCountry: string; fxToEur: Record<string, number>; retentionYears: number };
+  ads: {
+    /** Systémový uživatel Meta s oprávněním ads_read. Nikdy neukládat do DB. */
+    metaToken: string | null;
+    graphVersion: string;
+    feePct: number;
+    feeFixed: number;
+    syncHours: number;
+    analyzeDays: number;
+    analyzeDaily: boolean;
+  };
   trends: {
     /** Claude API: klíč čte SDK z ANTHROPIC_API_KEY. */
     aiEnabled: boolean;
@@ -130,6 +140,15 @@ export function loadConfig(env: Env = process.env): Config {
     },
     catalog: {
       syncHours: num("CATALOG_SYNC_HOURS", 6),
+    },
+    ads: {
+      metaToken: env.META_ACCESS_TOKEN?.trim() || null,
+      graphVersion: opt("META_GRAPH_VERSION", "v26.0"),
+      feePct: num("ADS_FEE_PCT", 2),
+      feeFixed: num("ADS_FEE_FIXED", 0),
+      syncHours: num("ADS_SYNC_HOURS", 6),
+      analyzeDays: num("ADS_ANALYZE_DAYS", 14),
+      analyzeDaily: bool("ADS_ANALYZE_DAILY", true),
     },
     trends: {
       aiEnabled: Boolean(env.ANTHROPIC_API_KEY?.trim() || env.ANTHROPIC_AUTH_TOKEN?.trim()),

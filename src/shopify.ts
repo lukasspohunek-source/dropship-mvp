@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { FulfillResult, IncomingCustomer, IncomingOrder, OrderLine, ShippingAddress, Store } from "./types.js";
+import type { FulfillResult, IncomingCustomer, IncomingOrder, OrderAttribution, OrderLine, ShippingAddress, Store } from "./types.js";
 
 /** Ověří podpis Shopify webhooku (HMAC-SHA256 z raw těla, base64). */
 export function verifyShopifyHmac(rawBody: Buffer, headerHmac: string | undefined, secret: string): boolean {
@@ -14,6 +14,39 @@ const str = (v: unknown): string | null => {
   const s = String(v).trim();
   return s === "" ? null : s;
 };
+
+function lineUnitPrice(li: any): number | null {
+  const price = Number(li.price);
+  const qty = Number(li.quantity ?? 0);
+  if (!Number.isFinite(price) || qty <= 0) return null;
+  const discount = Number(li.total_discount ?? 0);
+  return Math.round((price - (Number.isFinite(discount) ? discount / qty : 0)) * 100) / 100;
+}
+
+/** UTM z landing_site (např. "/products/x?utm_source=facebook&utm_campaign=…"). */
+export function parseAttribution(body: any): OrderAttribution | null {
+  const landing = str(body.landing_site);
+  let params: URLSearchParams | null = null;
+  if (landing) {
+    try {
+      params = new URL(landing, "https://shop.invalid").searchParams;
+    } catch {
+      params = null;
+    }
+  }
+  const get = (k: string) => {
+    const v = params?.get(k)?.trim();
+    return v ? v.slice(0, 200) : null;
+  };
+  const a: OrderAttribution = {
+    utmSource: get("utm_source"),
+    utmMedium: get("utm_medium"),
+    utmCampaign: get("utm_campaign"),
+    utmContent: get("utm_content"),
+    sourceName: str(body.source_name),
+  };
+  return Object.values(a).some((v) => v) ? a : null;
+}
 
 function parseCustomer(body: any, address: ShippingAddress | null): IncomingCustomer | null {
   const c = body.customer ?? {};
@@ -55,6 +88,7 @@ export function parseOrderWebhook(body: any): IncomingOrder {
     sku: str(li.sku),
     quantity: Number(li.quantity ?? 0),
     requiresShipping: li.requires_shipping !== false,
+    unitPrice: lineUnitPrice(li),
   }));
   return {
     shopifyOrderId: String(body.id),
@@ -67,6 +101,7 @@ export function parseOrderWebhook(body: any): IncomingOrder {
     address,
     lines,
     customer: parseCustomer(body, address),
+    attribution: parseAttribution(body),
   };
 }
 

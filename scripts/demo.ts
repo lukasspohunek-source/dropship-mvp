@@ -2,6 +2,7 @@
  * Demo: rozhraní s ukázkovými daty, bez AliExpressu a Shopify (vše falešné, v paměti).
  *   npm run demo   → http://localhost:3100/app/  token: demo-token-0123456789-abcdef
  */
+import { AdsService, DEFAULT_THRESHOLDS, adsRouter, type AdRow } from "../src/ads.js";
 import { parseAeProduct } from "../src/aliexpress.js";
 import { CatalogService, catalogRouter, type CatalogStore } from "../src/catalog.js";
 import { ComplianceService, complianceRouter } from "../src/compliance.js";
@@ -122,11 +123,45 @@ const trends = new TrendService(
   catalog,
 );
 
+// ---- reklamy (falešná Meta, 14 dní dat) ----
+const daysAgo = (d: number) => new Date(Date.now() - d * 86400e3).toISOString().slice(0, 10);
+for (let d = 13; d >= 1; d -= 2) {
+  const id = mk(100 + d, { shopifyOrderId: String(9000 + d), name: `#2${100 + d}`, totalPrice: 549, attribution: { utmSource: "facebook", utmMedium: "paid", utmCampaign: "Lampa CZ 1005006543210987", utmContent: null, sourceName: "web" } });
+  repo.db.prepare("UPDATE orders SET created_at = ?, status = 'FULFILLED' WHERE id = ?").run(`${daysAgo(d)}T09:00:00.000Z`, id);
+}
+const fakeMeta = {
+  account: async (id: string) => ({ id, name: "Pokovo reklamy", currency: "CZK" }),
+  insights: async (): Promise<AdRow[]> => {
+    const rows: AdRow[] = [];
+    for (let d = 13; d >= 0; d--) {
+      const fatigue = d <= 2 ? 0.4 : 1;
+      rows.push({ date: daysAgo(d), adId: "120200000000001", adName: "Video lampa", adsetId: "120200000000010", adsetName: "CZ 25–45", campaignId: "120200000000100", campaignName: "Lampa CZ 1005006543210987", spend: 60, impressions: 2400, clicks: Math.round(36 * fatigue), purchases: d % 2 ? 1 : 0, purchaseValue: d % 2 ? 549 : 0 });
+      rows.push({ date: daysAgo(d), adId: "120200000000002", adName: "Obrázek zima", adsetId: "120200000000020", adsetName: "Zájmy", campaignId: "120200000000200", campaignName: "Obecná – zimní", spend: 45, impressions: 900, clicks: 5, purchases: 0, purchaseValue: 0 });
+    }
+    return rows;
+  },
+};
+const ads = new AdsService(
+  repo,
+  shops,
+  fakeMeta,
+  {
+    advise: async (i) => ({
+      summary: `Za ${i.period.from} – ${i.period.to} je zisk před reklamou ${Math.round(i.totals.grossProfit)} ${i.shop.currency} a útrata ${Math.round(i.totals.spend)} ${i.shop.currency}. Kampaň na lampu vydělává, obecná kampaň utrácí bez prodeje.`,
+      actions: i.findings.slice(0, 3).map((f, k) => ({ title: f.title, why: f.detail, steps: [f.action], findingIds: [f.id], priority: k + 1 })),
+    }),
+  },
+  { feePct: 2, feeFixed: 0, fxToEur: { EUR: 1, CZK: 0.04 }, thresholds: DEFAULT_THRESHOLDS },
+);
+await ads.addAccount(cz, "act_1234567890");
+await ads.syncAll();
+await ads.analyze(cz, 14);
+
 const app = createApp({
   repo, orders, tracking, shops,
   oauth: { authorizeUrl: () => "https://example.com/ae-oauth-demo", handleCallback: async () => {}, isAuthorized: () => true },
   onOrderCreated: (id, inc) => void crm.recordOrder(id, inc),
-  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance), trendsRouter(trends, () => orders.reprocessWaitingForMapping())],
+  extraAdmin: [catalogRouter(catalog, shops, () => orders.reprocessWaitingForMapping()), crmRouter(crm), complianceRouter(compliance), trendsRouter(trends, () => orders.reprocessWaitingForMapping()), adsRouter(ads)],
   cfg: { adminToken: TOKEN, publicBaseUrl: `http://localhost:${PORT}`, dryRun: false, autoPay: true },
 });
 app.listen(PORT, () => console.log(`DEMO: http://localhost:${PORT}/app/  token: ${TOKEN}`));

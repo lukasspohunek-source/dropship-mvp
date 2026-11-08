@@ -156,3 +156,11 @@ details summary { cursor: pointer; color: var(--pk-ink-2); margin: var(--pk-spac
   .tabs button:hover, button.link:hover { background: none; }
   .chips button.on:hover, .subtabs button.on:hover { background: var(--pk-highlight); }
 }
+
+/* Graf zisku po dnech (výška sloupců se nastavuje z JS) */
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 96px; margin-top: var(--pk-space-2); }
+.bar { flex: 1 1 0; min-width: 2px; border-radius: 2px 2px 0 0; }
+.bar.pos { background: var(--pk-ok); }
+.bar.neg { background: var(--pk-err); }
+.action { border-top: var(--pk-border) solid var(--pk-line); padding-top: var(--pk-space-3); margin-top: var(--pk-space-3); }
+ol { padding-left: var(--pk-space-5); margin: var(--pk-space-2) 0; }

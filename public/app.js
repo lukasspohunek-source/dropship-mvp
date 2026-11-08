@@ -265,8 +265,9 @@ function editMapping(m, after) {
 
 async function viewProducts(root) {
   const sub = state.sub.products || "catalog";
-  put(root, h("div", { class: "subtabs" }, [["catalog", "Katalog"], ["trends", "AI trendy"]].map(([k, l]) => h("button", { class: k === sub ? "on" : "", onclick: () => go("products", k) }, l))));
+  put(root, h("div", { class: "subtabs" }, [["catalog", "Katalog"], ["ads", "Reklamy"], ["trends", "AI trendy"]].map(([k, l]) => h("button", { class: k === sub ? "on" : "", onclick: () => go("products", k) }, l))));
   if (sub === "trends") return viewTrends(root);
+  if (sub === "ads") return viewAds(root);
   const [list, gaps] = await Promise.all([api("/products"), api("/compliance/gpsr")]);
   const gapIds = new Set(gaps.map((g) => g.id));
   put(root, 
@@ -323,6 +324,95 @@ function pricingPreview() {
     const r = await act(() => api(`/pricing/preview?shopId=${v.shopId}&cost=${v.cost}`), null, null);
     if (r) out.replaceChildren(h("b", {}, money(r.price, r.currency)), ` (kurz ${r.rules.fxRate}, násobek ${r.rules.multiplier}, přirážka ${r.rules.fixedAdd})`);
   }), out);
+}
+
+// ---------- Reklamy ----------
+
+const SEV = { critical: ["Kritické", "err"], warning: ["Pozor", "warn"], opportunity: ["Příležitost", "ok"], info: ["Info", ""] };
+const PRIO = { 1: "Hned", 2: "Tento týden", 3: "Až bude čas" };
+
+/** Celé jednotky měny – přehled zisku nepotřebuje haléře. */
+const moneyR = (n, cur) => (n == null ? "–" : `${Math.round(n).toLocaleString("cs-CZ")} ${cur || ""}`.trim());
+
+async function viewAds(root) {
+  if (!state.shops.length) return put(root, h("p", { class: "muted" }, "Nejdřív přidej e-shop."));
+  const shopId = state.adsShop || state.shops[0].id;
+  const days = state.adsDays || 14;
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - (days - 1) * 86400e3).toISOString().slice(0, 10);
+  const [st, stats, reports] = await Promise.all([api("/ads/status"), api(`/ads/stats?shopId=${shopId}&from=${from}&to=${to}`), api(`/ads/reports?shopId=${shopId}`)]);
+  const report = reports[0] ? await api(`/ads/reports/${reports[0].id}`) : null;
+  const cur = stats.currency;
+  const t = stats.totals;
+  const sel = h("select", { onchange: (e) => ((state.adsShop = Number(e.target.value)), rerender()) }, shopOptions().map(([v, l]) => h("option", { value: v, selected: v === shopId }, l)));
+  const hasAcc = st.accounts.some((a) => a.shop_id === shopId);
+  put(root,
+    h("h1", {}, "Reklamy a zisk"),
+    h("label", {}, "E-shop", sel),
+    h("div", { class: "chips" }, [7, 14, 30].map((d) => h("button", { class: d === days ? "on" : "", onclick: () => ((state.adsDays = d), rerender()) }, `${d} dní`))),
+    !st.meta ? h("div", { class: "alert" }, "Meta není napojená (chybí META_ACCESS_TOKEN) – zisk z objednávek se počítá, útrata je 0.") : null,
+    st.meta && !hasAcc ? h("div", { class: "alert" }, "E-shop nemá reklamní účet. ", h("button", { class: "link", onclick: () => go("settings", "ads") }, "Přidat účet")) : null,
+    stats.warnings.map((w) => h("div", { class: "alert" }, w)),
+    h("div", { class: "row" },
+      h("button", { class: "primary", onclick: () => act(() => api("/ads/analyze", { method: "POST", body: { shopId, days } }), "Analýza hotová") }, "Analyzovat a doporučit"),
+      st.meta ? h("button", { onclick: () => act(() => api("/ads/sync", { method: "POST" }), null, (r) => (toast(`Načteno ${r.rows} řádků z ${r.accounts} účtů${r.errors ? `, chyb ${r.errors}` : ""}`), rerender())) }, "Načíst z Meta") : null),
+    h("div", { class: "grid" },
+      stat("Tržby bez DPH", moneyR(t.revenue, cur), null, plural(t.orders, "objednávka", "objednávky", "objednávek")),
+      stat("Zisk před reklamou", moneyR(t.grossProfit, cur), null, `náklady ${moneyR(t.cogs, cur)} · poplatky ${moneyR(t.fees, cur)}`),
+      stat("Útrata za reklamy", moneyR(t.spend, cur), null, t.unlinkedSpend ? `nepřiřazeno ${moneyR(t.unlinkedSpend, cur)}` : null),
+      stat("Zisk po reklamě", moneyR(t.profitAfterAds, cur), null, t.mer ? `MER ${String(t.mer).replace(".", ",")}` : null)),
+    profitChart(stats.daily, cur),
+    report ? reportBlock(report) : h("p", { class: "muted" }, "Zatím žádná analýza – spusť „Analyzovat a doporučit“. Automaticky běží jednou denně."),
+    h("h2", {}, "Produkty"),
+    h("div", { class: "scroll" }, h("table", {},
+      h("tr", {}, h("th", {}, "Produkt"), h("th", {}, "Tržby"), h("th", {}, "Zisk"), h("th", {}, "Reklama"), h("th", {}, "Po reklamě"), h("th", {}, "ROAS / min.")),
+      stats.products.map((p) => h("tr", {},
+        h("td", {}, p.title, p.stockOut ? h("span", { class: "badge err" }, "vyprodáno") : null),
+        h("td", { class: "num" }, moneyR(p.revenue, "")), h("td", { class: "num" }, moneyR(p.grossProfit, "")), h("td", { class: "num" }, moneyR(p.spend, "")),
+        h("td", { class: `num ${p.profitAfterAds < 0 ? "lvl-error" : ""}` }, moneyR(p.profitAfterAds, "")),
+        h("td", { class: "num" }, `${p.roas ?? "–"} / ${p.breakEvenRoas ?? "–"}`))))),
+    h("p", { class: "small muted" }, `Částky v ${cur} bez DPH. „min.“ = ROAS, pod kterým produkt prodělává.`),
+    h("h2", {}, "Kampaně"),
+    stats.campaigns.length ? stats.campaigns.map((c) => h("div", { class: "card" },
+      h("div", { class: "row between" }, h("span", { class: "title" }, c.name), c.linked ? h("span", { class: "badge ok" }, "přiřazeno") : h("button", { class: "link", onclick: () => linkCampaign(c) }, "Přiřadit k produktu")),
+      h("div", { class: "small muted" }, `útrata ${moneyR(c.spend, cur)} · CTR ${c.ctrPct ?? "–"} % · CPC ${c.cpc != null ? moneyR(c.cpc, cur) : "–"} · Meta nákupy ${c.metaPurchases} · objednávky z UTM ${c.utmOrders}`))) : h("p", { class: "muted" }, "Žádná data z Meta za období."),
+  );
+}
+
+function profitChart(daily, cur) {
+  const max = Math.max(1, ...daily.map((d) => Math.abs(d.profitAfterAds)));
+  const bars = h("div", { class: "bars", role: "img", "aria-label": "Zisk po reklamě po dnech" }, daily.map((d) => {
+    const b = h("div", { class: `bar ${d.profitAfterAds < 0 ? "neg" : "pos"}`, title: `${d.date}: ${money(d.profitAfterAds, cur)} (útrata ${money(d.spend, cur)})` });
+    b.style.height = `${Math.max(2, Math.round((Math.abs(d.profitAfterAds) / max) * 100))}%`;
+    return b;
+  }));
+  return h("div", { class: "card" }, h("div", { class: "small muted" }, "Zisk po reklamě po dnech"), bars);
+}
+
+function reportBlock(r) {
+  return h("div", {},
+    h("h2", {}, "Doporučení"),
+    h("p", { class: "small muted" }, `Analýza ${fmtDate(r.createdAt)} za ${fmtDay(r.from)} – ${fmtDay(r.to)}`),
+    r.ai ? h("div", { class: "card" }, h("p", {}, r.ai.summary),
+      r.ai.actions.map((a) => h("div", { class: "action" },
+        h("div", { class: "row between" }, h("span", { class: "title" }, a.title), h("span", { class: `badge ${a.priority === 1 ? "err" : a.priority === 2 ? "warn" : ""}` }, PRIO[a.priority])),
+        h("div", { class: "small" }, a.why),
+        a.steps.length ? h("ol", { class: "small" }, a.steps.map((x) => h("li", {}, x))) : null))) : null,
+    r.aiError ? h("div", { class: "alert" }, `AI shrnutí se nepovedlo: ${r.aiError}. Níže jsou nálezy pravidel.`) : null,
+    r.findings.length ? r.findings.map((f) => h("div", { class: "card" },
+      h("div", { class: "row between" }, h("span", { class: "title" }, f.title), h("span", { class: `badge ${SEV[f.severity][1]}` }, SEV[f.severity][0])),
+      h("div", { class: "small muted" }, f.ref.name),
+      h("div", { class: "small" }, f.detail),
+      h("div", { class: "small" }, h("b", {}, "Co udělat: "), f.action))) : h("p", { class: "muted" }, "Žádné nálezy – nic nehoří."),
+  );
+}
+
+async function linkCampaign(c) {
+  const products = await api(`/products?shopId=${state.adsShop || state.shops[0].id}`);
+  modal(h("h2", {}, "Přiřadit kampaň"), h("p", {}, c.name),
+    products.length ? form([{ name: "productId", label: "Produkt", type: "select", options: products.map((p) => [p.id, p.title]) }], "Přiřadit", (v) =>
+      act(() => api("/ads/links", { method: "PUT", body: { level: "campaign", metaId: c.campaignId, productId: Number(v.productId) } }), "Přiřazeno", () => (closeModal(), rerender())))
+      : h("p", { class: "muted" }, "E-shop nemá žádné naimportované produkty."));
 }
 
 // ---------- AI trendy ----------
@@ -591,12 +681,12 @@ function newSegment() {
 
 // ---------- nastavení ----------
 
-const SET_TABS = [["shops", "E-shopy"], ["seller", "Prodávající"], ["mappings", "Mapování"], ["vat", "DPH / OSS"], ["gdpr", "GDPR"], ["ae", "AliExpress"]];
+const SET_TABS = [["shops", "E-shopy"], ["ads", "Reklamy"], ["seller", "Prodávající"], ["mappings", "Mapování"], ["vat", "DPH / OSS"], ["gdpr", "GDPR"], ["ae", "AliExpress"]];
 
 async function viewSettings(root) {
   const sub = state.sub.settings || "shops";
   put(root, h("h1", {}, "Nastavení"), h("div", { class: "subtabs" }, SET_TABS.map(([k, l]) => h("button", { class: k === sub ? "on" : "", onclick: () => go("settings", k) }, l))));
-  await { shops: setShops, seller: setSeller, mappings: setMappings, vat: setVat, gdpr: setGdpr, ae: setAe }[sub](root);
+  await { shops: setShops, ads: setAds, seller: setSeller, mappings: setMappings, vat: setVat, gdpr: setGdpr, ae: setAe }[sub](root);
 }
 
 const PRICING_FIELDS = (p = {}) => [
@@ -641,6 +731,30 @@ function shopForm(s) {
       if (isNew) body.domain = v.domain; else body.active = v.active;
       await act(() => api(isNew ? "/shops" : `/shops/${s.id}`, { method: isNew ? "POST" : "PATCH", body }), "Uloženo", async () => (await loadShops(), closeModal(), rerender()));
     }));
+}
+
+const UTM_TEMPLATE = "utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_content={{ad.name}}";
+
+async function setAds(root) {
+  const [st, links] = await Promise.all([api("/ads/status"), api("/ads/links")]);
+  put(root,
+    !st.meta ? h("div", { class: "alert" }, "Chybí META_ACCESS_TOKEN v .env na serveru (token systémového uživatele s oprávněním ads_read).") : null,
+    h("h3", {}, "Reklamní účty Meta"),
+    st.accounts.map((a) => h("div", { class: "card row between" },
+      h("span", {}, h("span", { class: "title" }, a.name || `act_${a.account_id}`), h("br"), h("span", { class: `small ${a.last_error ? "lvl-error" : "muted"}` }, `${shopName(a.shop_id)} · ${a.currency} · ${a.last_error ? a.last_error : `načteno ${fmtDate(a.last_synced_at)}`}`)),
+      h("button", { class: "link", onclick: () => confirm("Odebrat účet? Stažená data zůstanou.") && act(() => api(`/ads/accounts/${a.id}`, { method: "DELETE" }), "Odebráno") }, "odebrat"))),
+    st.meta ? form([
+      { name: "shopId", label: "E-shop", type: "select", options: shopOptions() },
+      { name: "accountId", label: "ID reklamního účtu", required: true, placeholder: "act_1234567890", hint: "Ads Manager → přepínač účtu → číslo účtu" },
+    ], "Přidat účet", (v) => act(() => api("/ads/accounts", { method: "POST", body: { shopId: Number(v.shopId), accountId: v.accountId } }), "Účet přidán")) : null,
+    h("h3", {}, "Měření objednávek z reklam (UTM)"),
+    h("p", { class: "small muted" }, "V Meta Ads Manageru vlož u reklam do pole „Parametry URL“ tento text. Pak se objednávky spárují s kampaní i bez Pixelu:"),
+    h("pre", {}, UTM_TEMPLATE),
+    h("button", { onclick: () => navigator.clipboard?.writeText(UTM_TEMPLATE).then(() => toast("Zkopírováno"), () => toast("Kopírování se nepovedlo", true)) }, "Zkopírovat"),
+    h("h3", {}, "Přiřazení reklam k produktům"),
+    h("p", { class: "small muted" }, "Automaticky: když název kampaně, sady nebo reklamy obsahuje ID produktu z AliExpressu. Ručně: v Produkty → Reklamy → kampaň → Přiřadit."),
+    links.length ? links.map((l) => h("div", { class: "card row between small" }, `${l.level} ${l.meta_id} → ${l.product_title}`, h("button", { class: "link", onclick: () => act(() => api(`/ads/links/${l.id}`, { method: "DELETE" }), "Odebráno") }, "odebrat"))) : h("p", { class: "muted small" }, "Žádná ruční přiřazení."),
+  );
 }
 
 async function setSeller(root) {
@@ -774,6 +888,13 @@ $("#loginForm").addEventListener("submit", async (e) => {
   }
 });
 $("#logout").addEventListener("click", logout);
+// Odkaz typu …/app/#settings/ads otevřený v už načtené stránce.
+window.addEventListener("hashchange", () => {
+  const [tab, sub] = location.hash.slice(1).split("/");
+  if (!VIEWS[tab] || !getToken()) return;
+  const same = tab === state.tab && (sub || undefined) === (state.sub[tab] || undefined);
+  if (!same) go(tab, sub);
+});
 for (const b of document.querySelectorAll("#tabs button")) b.addEventListener("click", () => go(b.dataset.tab));
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 
