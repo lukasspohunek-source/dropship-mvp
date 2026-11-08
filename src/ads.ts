@@ -705,7 +705,7 @@ export class AdsService {
       this.repo.db.exec("ROLLBACK");
       throw e;
     }
-    const dates = rows.map((r) => r.date).sort();
+    const dates = rows.map((r) => r.date).sort((a, b) => a.localeCompare(b));
     this.repo.log(null, "info", `Import CSV do ${a.platform} ${a.account_id}: ${rows.length} řádků`);
     return { rows: rows.length, from: dates[0] ?? null, to: dates.at(-1) ?? null };
   }

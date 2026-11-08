@@ -433,7 +433,7 @@ function proposalButton(r, f) {
   return h("button", { class: p.type === "pause" ? "danger" : "primary", onclick: () => {
     const what = `${label} v ${p.platform}: ${p.campaignIds.join(", ")}\n\nDůvod: ${f.title}\n${f.detail}\n\nOpravdu provést?`;
     if (!confirm(what)) return;
-    act(() => api("/ads/actions", { method: "POST", body: { reportId: r.id, findingId: f.id, confirm: true } }), null, (res) => (toast(res.ok ? "Provedeno" : `Částečně selhalo: ${res.results.filter((x) => !x.ok).map((x) => x.error).join("; ")}`, !res.ok), rerender()));
+    void act(() => api("/ads/actions", { method: "POST", body: { reportId: r.id, findingId: f.id, confirm: true } }), null, (res) => (toast(res.ok ? "Provedeno" : `Částečně selhalo: ${res.results.filter((x) => !x.ok).map((x) => x.error).join("; ")}`, !res.ok), rerender()));
   } }, label);
 }
 
