@@ -23,7 +23,7 @@ Shopify e-shopy ── webhook orders/paid ──► dropship-mvp ──► AliE
 | **CRM** | zákazníci z objednávek (napříč e-shopy), poznámky, úkoly, leady, reklamace a odstoupení se lhůtami, segmenty + CSV, přehled |
 | **Compliance** | GPSR údaje u produktů, údaje prodávajícího, formulář pro odstoupení, GDPR export/anonymizace/retence, DPH report (OSS/IOSS) |
 | **AI trendy** | signály z Google Trends/Shopping (SerpApi), Seznamu, Heureky, TikToku a Instagramu (Bright Data) + bestsellery AliExpressu → Claude vybere kandidáty, kód spočítá marži, import jedním klepnutím |
-| **Rozhraní** | `/app` – mobilní web, přihlášení admin tokenem |
+| **Rozhraní** | `/app` – mobilní web v designu POKOVO (tokeny z Pokovo-konfiguratory), přihlášení admin tokenem |
 
 > Compliance funkce jsou **pomůcka**, ne právní ani daňové poradenství. Obchodní podmínky, GPSR a DPH si nech ověřit.
 
