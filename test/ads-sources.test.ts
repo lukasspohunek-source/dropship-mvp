@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DEFAULT_THRESHOLDS, AdsService } from "../src/ads.js";
 import { GoogleAdsSource, SklikSource, TikTokAdsSource, csvDate, csvNumber, parseAdsCsv } from "../src/ads-sources.js";
+import { ConflictError, ValidationError } from "../src/errors.js";
 import { memRepo, seedShop, shopService } from "./helpers.js";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
@@ -115,11 +116,16 @@ test("více platforem: účty s platformou, CSV import Heureky, sync jen platfor
   const ads = new AdsService(repo, shops, { tiktok }, null, { feePct: 2, feeFixed: 0, fxToEur: { EUR: 1, CZK: 0.04 }, thresholds: DEFAULT_THRESHOLDS }, () => new Date("2026-11-08T12:00:00Z"));
   await assert.rejects(ads.addAccount(shopId, "123456", "meta"), /META_ACCESS_TOKEN/);
   await assert.rejects(ads.addAccount(shopId, "123", "neco"), /platform/);
-  await ads.addAccount(shopId, "7000000000001", "tiktok");
+  const tt = await ads.addAccount(shopId, "7000000000001", "tiktok");
   const heu = await ads.addAccount(shopId, "heureka-cz", "heureka");
   assert.equal(heu.currency, "CZK");
   assert.deepEqual(ads.importCsv(heu.id, "datum;kampaň;náklady;prokliky\n2026-11-05;Lampy;150,5;40\n2026-11-06;Lampy;50;10"), { rows: 2, from: "2026-11-05", to: "2026-11-06" });
   ads.importCsv(heu.id, "datum;kampaň;náklady\n2026-11-06;Lampy;60");
+  // Chybné CSV je chyba vstupu (400), ne chyba serveru; účet s API nejde plnit z CSV (dvojí útrata).
+  assert.throws(() => ads.importCsv(heu.id, ""), ValidationError);
+  assert.throws(() => ads.importCsv(heu.id, "datum;cena\n2026-11-05;10"), (e) => e instanceof ValidationError && /chybí sloupce/.test(e.message));
+  assert.throws(() => ads.importCsv(heu.id, "datum;kampaň;náklady\n2026-11-05;Lampy;abc"), (e) => e instanceof ValidationError && /Řádek 2/.test(e.message));
+  assert.throws(() => ads.importCsv(tt.id, "datum;kampaň;náklady\n2026-11-05;TT kampaň;99"), (e) => e instanceof ConflictError && /dvakrát/.test(e.message));
   assert.deepEqual(await ads.syncAll(), { accounts: 1, rows: 1, errors: 0 }, "Heureka se nesynchronizuje, jen importuje");
   const st = ads.stats(shopId, "2026-11-01", "2026-11-08");
   assert.equal(st.totals.spend, 410.5, "200 TikTok + 150,5 + 60 Heureka (6. 11. přepsáno)");
