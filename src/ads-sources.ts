@@ -1,4 +1,5 @@
 import type { AdRow, AdsSource } from "./ads.js";
+import { ValidationError } from "./errors.js";
 
 /**
  * Další reklamní kanály (jen čtení útraty): TikTok Ads, Google Ads, Sklik.
@@ -324,7 +325,7 @@ export function csvNumber(v: string | undefined): number {
   // 1.234,56 / 1234,56 → desetinná čárka; 1,234.56 / 1234.56 → tečka
   const n = /,\d{1,2}$/.test(t) ? t.replaceAll(".", "").replace(",", ".") : t.replaceAll(",", "");
   const x = Number(n);
-  if (!Number.isFinite(x)) throw new Error(`Neplatné číslo „${v}“`);
+  if (!Number.isFinite(x)) throw new ValidationError(`Neplatné číslo „${v}“`);
   return x;
 }
 
@@ -334,26 +335,26 @@ export function csvDate(v: string): string {
   if (m) return `${m[1]}-${m[2]!.padStart(2, "0")}-${m[3]!.padStart(2, "0")}`;
   m = /^(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})/.exec(t);
   if (m) return `${m[3]}-${m[2]!.padStart(2, "0")}-${m[1]!.padStart(2, "0")}`;
-  throw new Error(`Neplatné datum „${v}“ (čekám RRRR-MM-DD nebo D. M. RRRR)`);
+  throw new ValidationError(`Neplatné datum „${v}“ (čekám RRRR-MM-DD nebo D. M. RRRR)`);
 }
 
 /** Načte CSV (oddělovač ; , nebo tab, česká i anglická hlavička). Povinné: datum, kampaň, útrata. */
 export function parseAdsCsv(text: string, maxRows = 50_000): CsvRow[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) throw new Error("CSV je prázdné");
+  if (lines.length < 2) throw new ValidationError("CSV je prázdné");
   const head = lines[0]!;
   const sep = [";", "\t", ","].sort((a, b) => head.split(b).length - head.split(a).length)[0]!;
   const cols = splitLine(head, sep).map(normHead);
   const idx = Object.fromEntries(Object.entries(HEADERS).map(([k, names]) => [k, cols.findIndex((c) => names.includes(c))])) as Record<keyof CsvRow, number>;
   const missing = (["date", "campaign", "spend"] as const).filter((k) => idx[k] < 0);
-  if (missing.length) throw new Error(`V hlavičce chybí sloupce: ${missing.join(", ")} (např. datum;kampaň;náklady;kliky;zobrazení;konverze;hodnota)`);
-  if (lines.length - 1 > maxRows) throw new Error(`Max. ${maxRows} řádků`);
+  if (missing.length) throw new ValidationError(`V hlavičce chybí sloupce: ${missing.map((k) => ({ date: "datum", campaign: "kampaň", spend: "náklady" })[k]).join(", ")} (např. datum;kampaň;náklady;kliky;zobrazení;konverze;hodnota)`);
+  if (lines.length - 1 > maxRows) throw new ValidationError(`Max. ${maxRows} řádků`);
   return lines.slice(1).map((line, i) => {
     const c = splitLine(line, sep);
     const get = (k: keyof CsvRow) => (idx[k] >= 0 ? c[idx[k]] : undefined);
     try {
       const campaign = (get("campaign") ?? "").trim();
-      if (!campaign) throw new Error("chybí název kampaně");
+      if (!campaign) throw new ValidationError("chybí název kampaně");
       return {
         date: csvDate(get("date") ?? ""),
         campaign: campaign.slice(0, 200),
@@ -364,7 +365,7 @@ export function parseAdsCsv(text: string, maxRows = 50_000): CsvRow[] {
         value: csvNumber(get("value")),
       };
     } catch (e) {
-      throw new Error(`Řádek ${i + 2}: ${(e as Error).message}`);
+      throw new ValidationError(`Řádek ${i + 2}: ${(e as Error).message}`);
     }
   });
 }

@@ -690,6 +690,8 @@ export class AdsService {
   importCsv(accountDbId: number, text: string): { rows: number; from: string | null; to: string | null } {
     const a = this.repo.db.prepare("SELECT * FROM ad_accounts WHERE id = ?").get(accountDbId) as AccountRow | undefined;
     if (!a) throw new NotFoundError("Účet neexistuje");
+    if (!IMPORT_ONLY.includes(a.platform))
+      throw new ConflictError(`${PLATFORM_LABEL[a.platform as Platform] ?? a.platform} se načítá přes API – CSV import je jen pro Heureka/Jiné (jinak by se útrata započítala dvakrát)`);
     const rows = parseAdsCsv(String(text ?? ""));
     const t = this.now().toISOString();
     const up = this.repo.db.prepare(UPSERT_STAT);
